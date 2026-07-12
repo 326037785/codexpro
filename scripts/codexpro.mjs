@@ -879,9 +879,8 @@ async function downloadFile(url, destination, asset) {
 }
 
 function verifyCloudflared(binaryPath) {
-  const result = spawnSync(binaryPath, ['--version'], {
+  const result = spawnSyncPortable(binaryPath, ['--version'], {
     stdio: 'ignore',
-    shell: false,
     timeout: 15000
   });
   if (result.status !== 0) {
@@ -968,9 +967,8 @@ async function resolveCloudflared(args) {
 }
 
 function verifyNgrok(binaryPath) {
-  const result = spawnSync(binaryPath, ['version'], {
+  const result = spawnSyncPortable(binaryPath, ['version'], {
     stdio: 'ignore',
-    shell: false,
     timeout: 15000
   });
   if (result.status !== 0) {
@@ -998,9 +996,8 @@ function resolveNgrok(args) {
 }
 
 function verifyTailscale(binaryPath) {
-  const result = spawnSync(binaryPath, ['version'], {
+  const result = spawnSyncPortable(binaryPath, ['version'], {
     stdio: 'ignore',
-    shell: false,
     timeout: 15000
   });
   if (result.status !== 0) {
@@ -1110,7 +1107,12 @@ const spawnedChildren = new Set();
 
 function spawnLogged(name, command, args, options = {}) {
   const { verbose = false, ...spawnOptions } = options;
-  const child = spawn(command, args, { ...spawnOptions, stdio: ['ignore', 'pipe', 'pipe'] });
+  const invocation = processInvocation(command, args);
+  const child = spawn(invocation.command, invocation.args, {
+    ...spawnOptions,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments
+  });
   const logLines = [];
   const record = (stream, chunk) => {
     const text = redactForLog(String(chunk));
@@ -1201,10 +1203,12 @@ function requestQuickTunnelViaCurl(proxyUrl) {
   const args = ['--silent', '--show-error', '--fail', '--max-time', '30'];
   if (proxyUrl) args.push('--proxy', proxyUrl);
   args.push('-X', 'POST', 'https://api.trycloudflare.com/tunnel');
-  const result = spawnSync('curl', args, {
+  const curlCommand = process.platform === 'win32'
+    ? commandPaths('curl').find(isWindowsCommandCandidate) || 'curl'
+    : 'curl';
+  const result = spawnSyncPortable(curlCommand, args, {
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    shell: false
+    stdio: ['ignore', 'pipe', 'pipe']
   });
   if (result.status !== 0) {
     throw new Error(redactForLog(`Failed to request Cloudflare quick tunnel via curl: ${result.stderr || result.stdout || `exit ${result.status}`}`));
@@ -1608,6 +1612,15 @@ function processInvocation(command, args) {
     args: ['/d', '/q', '/v:off', '/s', '/c', commandLine],
     windowsVerbatimArguments: true
   };
+}
+
+function spawnSyncPortable(command, args, options = {}) {
+  const invocation = processInvocation(command, args);
+  return spawnSync(invocation.command, invocation.args, {
+    ...options,
+    shell: false,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments
+  });
 }
 
 function runProcessCaptured(command, args, options) {
@@ -3678,7 +3691,19 @@ function writeControlPrompt() {
 }
 
 function runControlPanel(details, cleanup = cleanupChildren) {
-  if (!process.stdin.isTTY) return new Promise(() => {});
+  if (!process.stdin.isTTY) {
+    process.stdin.setEncoding('utf8');
+    process.stdin.resume();
+    return new Promise(() => {
+      process.stdin.on('data', (input) => {
+        const normalized = String(input).trim().toLowerCase();
+        if (normalized === 'q') {
+          cleanup();
+          process.exit(0);
+        }
+      });
+    });
+  }
 
   writeControlPrompt();
 

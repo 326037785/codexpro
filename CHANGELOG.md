@@ -13,6 +13,7 @@
 - Closed cross-session and concurrency gaps by isolating `show_changes` checkpoints per MCP session and making `apply_patch` share canonical per-file write locks with `write` and `edit`.
 - Made bounded ripgrep truncation tolerate an interrupted final JSON record, rejected symlinked `.ai-bridge` handoff paths, and terminated timed-out bash process trees instead of only their direct shell process.
 - Closed the follow-up security findings by rejecting symlinked handoff leaf files, bounding and force-terminating output-heavy bash trees, disabling unbounded regex in the Node search fallback, size-capping verified `cloudflared` downloads, removing `cmd.exe call` re-expansion, excluding internal plans from npm packages, and adding a protected `--token-file` path for stable launches.
+- Added Windows CI coverage and made smoke, stress, tunnel-shim, and runtime-status checks portable across Windows and Unix hosts.
 
 ## 0.29.0 (2026-07-13)
 

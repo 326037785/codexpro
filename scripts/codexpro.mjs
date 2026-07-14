@@ -1113,6 +1113,7 @@ function spawnLogged(name, command, args, options = {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsVerbatimArguments: invocation.windowsVerbatimArguments
   });
+  child.codexproKillTree = Boolean(invocation.killTree);
   const logLines = [];
   const record = (stream, chunk) => {
     const text = redactForLog(String(chunk));
@@ -1248,6 +1249,13 @@ function writeQuickTunnelCredentials(tunnel) {
 
 function killProcess(child) {
   if (!child || child.killed) return;
+  if (child.codexproKillTree && child.pid) {
+    const result = spawnSync('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
+      stdio: 'ignore',
+      windowsHide: true
+    });
+    if (!result.error && result.status === 0) return;
+  }
   try { child.kill('SIGTERM'); } catch {}
   setTimeout(() => {
     if (!child.killed) {
@@ -1610,7 +1618,8 @@ function processInvocation(command, args) {
   return {
     command: process.env.ComSpec || 'cmd.exe',
     args: ['/d', '/q', '/v:off', '/s', '/c', commandLine],
-    windowsVerbatimArguments: true
+    windowsVerbatimArguments: true,
+    killTree: true
   };
 }
 

@@ -2,13 +2,11 @@
 
 ## Which ChatGPT account should I use?
 
-Use a ChatGPT account with Apps / Developer Mode access. OpenAI currently lists Developer Mode for Pro, Plus, Business, Enterprise, and Education accounts on web.
-
-Current testing shows free and Go accounts do not expose the app flow needed for CodexPro.
+Use a ChatGPT account and web surface that currently exposes custom MCP apps. OpenAI's July 2026 documentation says full MCP, including write/modify actions, is available to Business and Enterprise/Edu. Pro can connect MCP apps with read/fetch permissions, but does not currently receive full MCP write support. Plus is not listed as a supported custom-MCP tier in that documentation.
 
 CodexPro does not unlock Developer Mode, unlock models, bypass account limits, or provide account access. It connects to the ChatGPT app surface your account already has.
 
-Account access and model tool support are separate. An eligible account can have Apps / Developer Mode, while a specific model surface may still be unable to call connectors or MCP tools directly. If CodexPro actions are unavailable in that chat, use another tool-capable ChatGPT surface or the Pro context fallback for that session.
+Plan access and model tool support are separate, and availability can change. If CodexPro actions are unavailable in that chat, use another tool-capable ChatGPT surface or the Pro context fallback for that session.
 
 ## How is CodexPro different from generic workspace bridges?
 
@@ -17,7 +15,7 @@ They can look similar at the transport layer because both use a local MCP-style 
 CodexPro is more focused: it is built around one clear product loop for ChatGPT users:
 
 ```text
-install -> setup in one repo -> paste Server URL into ChatGPT -> inspect/edit/verify/review that repo
+install -> setup in a repo -> paste Server URL into ChatGPT -> inspect/edit/verify/review allowed projects
 ```
 
 The main differences are:
@@ -290,7 +288,18 @@ The same hostname and CodexPro token are reused for that workspace.
 
 ## What if I run CodexPro in two repos at once?
 
-Use different local ports and different tunnel hostnames.
+For convenient switching through one connector, save the additional projects on the launch workspace:
+
+```bash
+codexpro settings set --project ~/code/repo-b --project ~/code/repo-c
+codexpro start
+```
+
+Ask ChatGPT to open an allowed project. `open_workspace` makes it the selected project for that MCP session, and later tools can omit `workspace_id`. `open_current_workspace` switches back to the launch project.
+
+Workspace selection is isolated between MCP sessions created by the client. A ChatGPT conversation is not guaranteed to map one-to-one to an MCP session, so use separate CodexPro processes when strict isolation matters.
+
+For separate processes, use different local ports and different tunnel hostnames.
 
 Example:
 
@@ -300,6 +309,14 @@ repo B: port 8788, hostname B
 ```
 
 Run `codexpro setup` in each repo and save a profile per workspace.
+
+## How do multiple ChatGPT sessions avoid overwriting each other?
+
+Workspace selection is session-local. For shared files, read the file first and pass its returned SHA-256 as `expected_sha256` to `write` or `edit`. CodexPro rejects the operation if the file changed after that read, and successful writes use atomic replacement.
+
+This protects against stale file content. It does not turn CodexPro into a collaborative merge server, so separate worktrees remain the stronger choice for large overlapping changes.
+
+For service managers and background launches, use `codexpro start --headless`. It avoids prompts, clipboard and browser actions, reports readiness with `CODEXPRO_READY`, and exits nonzero if its HTTP runtime stops unexpectedly.
 
 ## Why not use codexpro.github.io?
 

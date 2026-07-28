@@ -374,6 +374,7 @@ function buildProfilePayload(config: CodexProConfig, existing: WorkspaceProfile,
     toolMode: next.toolMode,
     toolCards: next.toolCards,
     ...(next.widgetDomain ? { widgetDomain: next.widgetDomain } : {}),
+    ...(existing.allowedRoots?.length ? { allowedRoots: existing.allowedRoots } : {}),
     ...(next.noInstallCloudflared ? { noInstallCloudflared: true } : {})
   };
 }

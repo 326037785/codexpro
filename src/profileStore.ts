@@ -34,6 +34,7 @@ export interface WorkspaceProfile {
   toolCards?: boolean;
   widgetDomain?: string;
   noInstallCloudflared?: boolean;
+  allowedRoots?: string[];
 }
 
 export interface RuntimeConnection {

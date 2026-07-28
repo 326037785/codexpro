@@ -183,6 +183,8 @@ function postToolsListWithSession(baseUrl, token, sessionId) {
 }
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-http-smoke-'));
+const alternateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-http-alternate-'));
+await fs.writeFile(path.join(alternateRoot, 'selected.txt'), 'http alternate workspace\n', 'utf8');
 const profileHome = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-http-profile-home-'));
 await fs.mkdir(path.join(root, '.codex', 'skills', 'http-smoke-skill'), { recursive: true });
 await fs.writeFile(path.join(root, '.codex', 'skills', 'http-smoke-skill', 'SKILL.md'), [
@@ -202,6 +204,7 @@ const runtimeAccessSecret = 'runtimeaccesssecret1234567890';
 const runtimeCloudflareSecret = 'eyJhbGciOiJIUzI1NiJ9.eyJ0dW5uZWwiOiJodHRwLXNtb2tlIn0.signature1234567890';
 const staleCloudflareToken = 'eyJhbGciOiJIUzI1NiJ9.eyJ0dW5uZWwiOiJzdGFsZS1odHRwLXNtb2tlIn0.signature1234567890';
 const runtimeId = createHash('sha256').update(root).digest('hex').slice(0, 24);
+const realAlternateRoot = await fs.realpath(alternateRoot);
 await fs.mkdir(path.join(profileHome, 'runtime'), { recursive: true });
 await fs.writeFile(path.join(profileHome, 'runtime', `${runtimeId}.json`), JSON.stringify({
   version: 1,
@@ -217,7 +220,7 @@ const child = spawn('node', ['dist/http.js'], {
     HOST: '0.0.0.0',
     PORT: String(genericPort),
     CODEXPRO_ROOT: root,
-    CODEXPRO_ALLOWED_ROOTS: root,
+    CODEXPRO_ALLOWED_ROOTS: [root, alternateRoot].join(path.delimiter),
     CODEXPRO_HOST: '127.0.0.1',
     CODEXPRO_PORT: String(port),
     CODEXPRO_HTTP_TOKEN: token,
@@ -406,6 +409,10 @@ try {
   if (savedProfile.cloudflareToken || savedProfile.cloudflareTokenFile) {
     throw new Error(`admin profile save kept cloudflare token config on ngrok profile: ${JSON.stringify(savedProfile)}`);
   }
+  await fs.writeFile(profileSaveJson.profile_path, JSON.stringify({
+    ...savedProfile,
+    allowedRoots: [realAlternateRoot]
+  }, null, 2), 'utf8');
 
   const localProfile = await fetch(`${baseUrl}/admin/profile?codexpro_token=${encodeURIComponent(token)}`, {
     method: 'POST',
@@ -422,6 +429,7 @@ try {
     localSavedProfile.cloudflareConfig ||
     localSavedProfile.cloudflareToken ||
     localSavedProfile.cloudflareTokenFile ||
+    JSON.stringify(localSavedProfile.allowedRoots) !== JSON.stringify([realAlternateRoot]) ||
     localProfileJson.profile?.hostname ||
     localProfileJson.profile?.ngrokConfig ||
     localProfileJson.profile?.cloudflareToken ||
@@ -581,11 +589,38 @@ try {
     throw new Error(`open_current_workspace returned ${currentOpened}, open_workspace default returned ${opened}`);
   }
 
+  await withClient(mcpUrl, async (firstClient) => {
+    const alternate = await callTool(firstClient, 'open_workspace', {
+      root: alternateRoot,
+      include_tree: false
+    });
+    const firstSelected = await callTool(firstClient, 'read', { path: 'selected.txt' });
+    const firstText = firstSelected.content?.find?.((part) => part.type === 'text')?.text ?? '';
+    if (!firstText.includes('http alternate workspace')) {
+      throw new Error(`first HTTP session did not retain selected workspace: ${firstText}`);
+    }
+
+    await withClient(mcpUrl, async (secondClient) => {
+      const secondList = await callTool(secondClient, 'list_workspaces');
+      if (
+        secondList.structuredContent.selected_workspace_id === alternate.structuredContent.workspace_id
+        || secondList.structuredContent.workspaces.some((workspace) => workspace.root === alternateRoot)
+      ) {
+        throw new Error(`HTTP workspace selection leaked between MCP sessions: ${JSON.stringify(secondList.structuredContent)}`);
+      }
+    });
+
+    const firstList = await callTool(firstClient, 'list_workspaces');
+    if (firstList.structuredContent.selected_workspace_id !== alternate.structuredContent.workspace_id) {
+      throw new Error(`first HTTP session lost its workspace selection: ${JSON.stringify(firstList.structuredContent)}`);
+    }
+  });
+
   await withClient(mcpUrl, async (client) => {
     const list = await callTool(client, 'list_workspaces');
     const ids = list.structuredContent.workspaces.map((workspace) => workspace.id);
     if (!ids.includes(opened)) {
-      throw new Error(`cross-session list_workspaces missing ${opened}; got ${ids.join(', ')}`);
+      throw new Error(`session list_workspaces missing configured workspace ${opened}; got ${ids.join(', ')}`);
     }
 
     const snapshot = await callTool(client, 'workspace_snapshot', { workspace_id: opened, max_depth: 1 });

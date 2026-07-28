@@ -5,7 +5,7 @@
 <h1 align="center">CodexPro</h1>
 
 <p align="center">
-  Local coding tools for ChatGPT, scoped to one repo.
+  Local coding tools for ChatGPT, scoped to explicitly allowed projects.
 </p>
 
 <p align="center">
@@ -71,6 +71,32 @@ CodexPro starts a local MCP server for the current workspace. ChatGPT can then:
 
 CodexPro is not a hosted service, model proxy, quota bypass, account pool, or OS sandbox.
 It connects your own ChatGPT session to your own local repo through the official Developer Mode / MCP app path.
+
+## Multiple Projects
+
+Keep one launch project and explicitly allow additional projects:
+
+```bash
+codexpro settings set --project ~/code/web --project ~/code/api
+codexpro start
+```
+
+`open_workspace` selects an allowed project for the current MCP session. After that, tools can omit `workspace_id` and operate on the selected project. `open_current_workspace` returns the session to the launch project.
+
+Selections are session-local, so one MCP session switching projects does not change another session. Whether separate ChatGPT conversations receive separate MCP sessions is controlled by the client. Keep using separate CodexPro processes when you need guaranteed process isolation, different permissions, or different public endpoints.
+
+Only the launch project and projects explicitly added with `--project` can be opened. Remove saved additional projects with:
+
+```bash
+codexpro settings set --clear-projects
+```
+
+## Relaunch Coding Experience
+
+- `view_image` sends PNG, JPEG, GIF, and WebP files as native MCP image content, so ChatGPT can inspect screenshots and visual assets without a separate upload.
+- `read` returns a SHA-256. Pass it as `expected_sha256` to `write` or `edit` when multiple sessions may touch the same file. A stale edit fails instead of silently overwriting newer work.
+- File writes use same-directory atomic replacement and preserve the existing file mode.
+- `codexpro start --headless` runs without prompts, clipboard access, browser opening, or terminal controls. It prints one `CODEXPRO_READY` line, publishes the supervised runtime PID in local status, cleans up on signals, and exits nonzero if the HTTP runtime dies unexpectedly.
 
 ## Repository Analysis
 

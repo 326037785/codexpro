@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { CodexProConfig } from "./config.js";
 import { WorkspaceManager, PathGuard, CodexProError, type Workspace } from "./guard.js";
 import { repoTree, readTextFile, writeTextFile, editTextFile, ensureAiBridge } from "./fsOps.js";
+import { viewWorkspaceImage } from "./imageOps.js";
 import { searchWorkspace } from "./searchOps.js";
 import { runBash } from "./bashOps.js";
 import { gitDiff, gitDiffStatus, gitLog, gitStatus } from "./gitOps.js";
@@ -333,6 +334,7 @@ const STANDARD_TOOL_NAMES = [
   "tree",
   "search",
   "load_skill",
+  "view_image",
   "read_handoff",
   "wait_for_handoff",
   "export_pro_context",
@@ -353,6 +355,7 @@ const FULL_TOOL_NAMES = [
   "tree",
   "search",
   "read",
+  "view_image",
   "write",
   "edit",
   "apply_patch",
@@ -478,10 +481,10 @@ function serverInstructions(config: CodexProConfig): string {
       : "5. Use bash only for meaningful verification commands such as npm test, npm run build, lint, typecheck, or an existing project script.";
 
   return [
-    "CodexPro connects ChatGPT to one local development workspace.",
+    "CodexPro connects ChatGPT to explicitly allowed local development workspaces.",
     "",
     "Preferred workflow:",
-    "1. Start with open_current_workspace. Use open_workspace only when the user gives a different root or asks to switch folders.",
+    "1. Start with open_current_workspace. Use open_workspace only when the user gives a different allowed root or asks to switch projects; that selection stays active for this MCP session.",
     "2. Follow any AGENTS.md-style instructions returned by the workspace open call before editing files.",
     "3. Inspect with tree, search, and read. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
     editInstruction,
@@ -913,27 +916,8 @@ const LOCAL_WRITE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: false, des
 const BASH_ANNOTATIONS = { readOnlyHint: false, openWorldHint: true, destructiveHint: true, idempotentHint: false };
 const HANDOFF_WRITE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: false, destructiveHint: false, idempotentHint: false };
 
-const workspaceManagers = new Map<string, WorkspaceManager>();
-
-function workspaceManagerKey(config: CodexProConfig): string {
-  return JSON.stringify({
-    defaultRoot: config.defaultRoot,
-    allowedRoots: [...config.allowedRoots].sort(),
-    contextDir: config.contextDir
-  });
-}
-
-function getSharedWorkspaceManager(config: CodexProConfig): WorkspaceManager {
-  const key = workspaceManagerKey(config);
-  const existing = workspaceManagers.get(key);
-  if (existing) return existing;
-  const manager = new WorkspaceManager(config);
-  workspaceManagers.set(key, manager);
-  return manager;
-}
-
 export function createCodexProServer(config: CodexProConfig): McpServer {
-  const workspaces = getSharedWorkspaceManager(config);
+  const workspaces = new WorkspaceManager(config);
   const guard = new PathGuard(config);
   const server = new McpServer({ name: "CodexPro", version: "0.29.0" }, { instructions: serverInstructions(config) });
   registeredToolNamesByServer.set(server as object, []);
@@ -1081,7 +1065,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       description:
         "Run one controlled, local-only CodexPro diagnostic. It checks modes, expected tools, workspace access, skills, git, safe bash policy, selected-only Pro context, and optional .ai-bridge write/edit probe without touching source files.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         write_probe: z.boolean().optional().describe("Create/edit only .ai-bridge/codexpro-self-test.md. Default: true."),
         bash_probe: z.boolean().optional().describe("Check bash policy with safe local commands only. Default: true."),
         pro_context_probe: z.boolean().optional().describe("Build a selected-only Pro context bundle in memory without writing pro-context.md. Default: true."),
@@ -1307,7 +1291,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       description:
         "List CodexPro modes plus discovered skill names and configured MCP server names. Use this early when planning needs local agent capabilities.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         include_global_skills: z.boolean().optional().describe("Include user and plugin skill folders. Default: true."),
         include_mcp_servers: z.boolean().optional().describe("Include configured MCP server names from safe config files. Default: true."),
         max_skills: z.number().int().min(1).max(500).optional().describe("Maximum skills to list. Default: 120.")
@@ -1350,7 +1334,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       description:
         "Load the bounded SKILL.md body for a discovered workspace, user, or plugin skill by name. Does not accept arbitrary paths; use after open_current_workspace/open_workspace shows skill_inventory.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         name: z.string().describe("Exact skill name from skill_inventory or codexpro_inventory."),
         source: z.enum(["workspace", "user", "plugin", "other"]).optional().describe("Optional source when multiple skills share a name."),
         path: z.string().optional().describe("Exact sanitized path from skill_inventory when name/source are still ambiguous."),
@@ -1400,7 +1384,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     "list_workspaces",
     {
       title: "List Workspaces",
-      description: "List currently opened CodexPro workspaces for this server/config.",
+      description: "List workspaces opened in this MCP session and identify the currently selected workspace.",
       inputSchema: {},
       annotations: READ_ONLY_ANNOTATIONS,
       _meta: {
@@ -1410,11 +1394,16 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       }
     },
     async () => {
+      const selectedWorkspaceId = workspaces.currentWorkspaceId();
       const current = workspaces.listWorkspaces();
-      const text = current.length
-        ? current.map((workspace) => `- ${workspace.id} — ${workspace.root} (opened ${workspace.openedAt})`).join("\n")
-        : "No workspaces opened on this CodexPro server/config yet. Call open_workspace first.";
-      return textResult(text, { workspaces: current, count: current.length });
+      const text = current
+        .map((workspace) => `- ${workspace.id} — ${workspace.root}${workspace.id === selectedWorkspaceId ? " (selected)" : ""} (opened ${workspace.openedAt})`)
+        .join("\n");
+      return textResult(text, {
+        workspaces: current,
+        count: current.length,
+        selected_workspace_id: selectedWorkspaceId
+      });
     }
   );
 
@@ -1425,7 +1414,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     {
       title: "Open Current Workspace",
       description:
-        "Use this once at the start to open the configured default workspace without accepting a path. Do not call open_workspace after this unless switching roots.",
+        "Open and select the configured default workspace for this MCP session. Use this to return to the launch workspace after switching roots.",
       inputSchema: {
         include_tree: z.boolean().optional().describe("Include a compact file tree. Default: false for speed."),
         max_depth: z.number().int().min(1).max(8).optional().describe("Tree depth when include_tree=true. Default: 2."),
@@ -1440,7 +1429,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       }
     },
     async (args) => {
-      const workspace = workspaces.defaultWorkspace();
+      const workspace = workspaces.selectDefaultWorkspace();
       const summary = await workspaceSummary(config, guard, workspace, {
         includeTree: parseBool(args.include_tree, false),
         maxDepth: limitInt(args.max_depth, 2, 1, 8),
@@ -1450,6 +1439,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       });
       return textResult(summary.text, {
         workspace_id: summary.workspaceId,
+        selected_workspace_id: summary.workspaceId,
         root: summary.root,
         agents_loaded: summary.agentsLoaded,
         agents_path: summary.agentsPath,
@@ -1472,7 +1462,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     {
       title: "Open Workspace",
       description:
-        "Open a local project directory as a CodexPro workspace. Returns a workspace_id plus git status, AGENTS.md, and a compact file tree.",
+        "Open and select an allowed local project for this MCP session. Later tool calls may omit workspace_id to use this selection.",
       inputSchema: {
         root: z.string().optional().describe("Project directory to open. Omit to use CODEXPRO_ROOT/current working directory. Supports ~/ paths."),
         path: z.string().optional().describe("Alias for root. Useful for clients that naturally send path instead of root."),
@@ -1505,6 +1495,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       });
       return textResult(summary.text, {
         workspace_id: summary.workspaceId,
+        selected_workspace_id: summary.workspaceId,
         root: summary.root,
         agents_loaded: summary.agentsLoaded,
         agents_path: summary.agentsPath,
@@ -1528,7 +1519,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       title: "Workspace Snapshot",
       description: "Return git status, recent commits, .ai-bridge context, and a compact tree for an opened workspace.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         max_depth: z.number().int().min(1).max(8).optional().describe("Tree depth. Default: 3."),
         max_files: z.number().int().min(1).max(3000).optional().describe("Alias for maximum tree entries. Default: 500."),
         include_skills: z.boolean().optional().describe("Discover repo-local skills. Default: false for speed."),
@@ -1578,7 +1569,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       title: "Inspect Workspace",
       description: "Build a bounded repository map with languages, project types, entrypoints, areas, symbols, relationships, and coverage warnings.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().optional().describe("Optional workspace-relative area to emphasize. Default: entire workspace."),
         max_files: z.number().int().min(1).max(100000).optional().describe("Maximum returned file records. Default: 300."),
         include_symbols: z.boolean().optional().describe("Include symbols in structured output. Default: true."),
@@ -1664,7 +1655,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       title: "File Tree",
       description: "List files and directories inside the workspace, excluding blocked paths.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().optional().describe("Directory relative to workspace root. Default: ."),
         max_depth: z.number().int().min(1).max(12).optional().describe("Maximum depth. Default: 4."),
         include_hidden: z.boolean().optional().describe("Include dotfiles/dotfolders that are not blocked. Default: false."),
@@ -1697,7 +1688,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       title: "Search Files",
       description: "Use this for targeted verification or code lookup. Prefer one specific final search instead of repeated broad verification searches.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         query: z.string().describe("Text or regex to search for."),
         regex: z.boolean().optional().describe("Treat query as a regular expression. Requires ripgrep. Default: false."),
         path: z.string().optional().describe("Directory or file relative to workspace root. Default: ."),
@@ -1748,7 +1739,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       title: "Read File",
       description: "Read a specific text file with line numbers. Avoid rereading files after write/edit/apply_patch unless exact final content is needed.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().describe("File path relative to workspace root."),
         start_line: z.number().int().min(1).optional().describe("First line to read. Default: 1."),
         end_line: z.number().int().min(1).optional().describe("Last line to read. Default: end of file."),
@@ -1776,16 +1767,57 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
   registerCodexTool(
     config,
     server,
+    "view_image",
+    {
+      title: "View Image",
+      description: "Inspect a PNG, JPEG, GIF, or WebP image from the active workspace. Returns native MCP image content plus dimensions and SHA-256.",
+      inputSchema: {
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
+        path: z.string().describe("Image path relative to workspace root."),
+        max_bytes: z.number().int().min(4096).max(2000000).optional().describe("Maximum image bytes. Default: at least 1 MB, capped at 2 MB.")
+      },
+      annotations: READ_ONLY_ANNOTATIONS
+    },
+    async (args) => {
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      const result = await viewWorkspaceImage(config, guard, workspace, args.path, args.max_bytes);
+      const dimensions = result.width && result.height ? `${result.width}x${result.height}` : "unknown";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Image: ${result.path}\nType: ${result.mimeType}\nDimensions: ${dimensions}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}`
+          },
+          { type: "image", data: result.data, mimeType: result.mimeType }
+        ],
+        structuredContent: redactStructured({
+          workspace_id: workspace.id,
+          root: workspace.root,
+          path: result.path,
+          mime_type: result.mimeType,
+          width: result.width ?? null,
+          height: result.height ?? null,
+          bytes: result.bytes,
+          sha256: result.sha256
+        })
+      };
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
     "write",
     {
       title: "Write File",
-      description: "Create or overwrite a meaningful text file inside the workspace. Returns a unified diff; do not create empty placeholder files.",
+      description: "Create or overwrite a meaningful text file inside the workspace using an atomic replacement. Returns a unified diff; pass the SHA from read when overwriting shared files.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().describe("File path relative to workspace root."),
         content: z.string().describe("Complete file contents to write."),
         create_dirs: z.boolean().optional().describe("Create parent directories if missing. Default: true."),
-        overwrite: z.boolean().optional().describe("Allow overwriting existing files. Default: true.")
+        overwrite: z.boolean().optional().describe("Allow overwriting existing files. Default: true."),
+        expected_sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional().describe("Optional SHA-256 from read. Fails instead of overwriting if another session changed the file.")
       },
       annotations: LOCAL_WRITE_ANNOTATIONS,
       _meta: {
@@ -1800,7 +1832,8 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       assertWriteToolAllowed(config, resolved.relPath);
       const result = await writeTextFile(config, guard, workspace, args.path, String(args.content ?? ""), {
         createDirs: args.create_dirs !== false,
-        overwrite: args.overwrite !== false
+        overwrite: args.overwrite !== false,
+        expectedSha256: args.expected_sha256
       });
       if (result.diff.changed) invalidateWorkspaceAnalysis(workspace.id);
       const text = `# Write File\n\nPath: ${result.path}\nExisted before: ${result.existed}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}\nDiff stats: +${result.diff.additions} -${result.diff.deletions}${diffBlock(result.diff.diff)}`;
@@ -1824,14 +1857,15 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     "edit",
     {
       title: "Edit File",
-      description: "Apply a targeted exact text replacement inside a workspace text file. Returns a unified diff.",
+      description: "Apply a targeted exact text replacement with atomic replacement. Returns a unified diff; pass the SHA from read to reject stale multi-session edits.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().describe("File path relative to workspace root."),
         old_text: z.string().describe("Exact text to replace. Must match once unless replace_all=true."),
         new_text: z.string().describe("Replacement text."),
         replace_all: z.boolean().optional().describe("Replace all occurrences. Default: false."),
-        expected_replacements: z.number().int().min(1).optional().describe("Fail if actual replacement count differs.")
+        expected_replacements: z.number().int().min(1).optional().describe("Fail if actual replacement count differs."),
+        expected_sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional().describe("Optional SHA-256 from read. Fails if another session changed the file.")
       },
       annotations: LOCAL_WRITE_ANNOTATIONS,
       _meta: {
@@ -1846,7 +1880,8 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       assertWriteToolAllowed(config, resolved.relPath);
       const result = await editTextFile(config, guard, workspace, args.path, String(args.old_text ?? ""), String(args.new_text ?? ""), {
         replaceAll: parseBool(args.replace_all, false),
-        expectedReplacements: args.expected_replacements
+        expectedReplacements: args.expected_replacements,
+        expectedSha256: args.expected_sha256
       });
       if (result.diff.changed) invalidateWorkspaceAnalysis(workspace.id);
       const text = `# Edit File\n\nPath: ${result.path}\nReplacements: ${result.replacements}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}\nDiff stats: +${result.diff.additions} -${result.diff.deletions}${diffBlock(result.diff.diff)}`;
@@ -1873,7 +1908,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       description:
         "Apply one unified diff patch inside the workspace. Paths are validated before applying. Prefer edit for tiny replacements and apply_patch for multi-file diffs.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         patch: z.string().describe("Unified diff patch to apply. File paths must stay inside the workspace and avoid blocked paths.")
       },
       annotations: LOCAL_WRITE_ANNOTATIONS,
@@ -1918,7 +1953,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       description:
         "Run one allowlisted verification command in the workspace, such as tests, build, lint, typecheck, or a project script. Do not use for git status/diff or file inspection; use show_changes, tree, search, and read instead. Do not chain commands with &&, pipes, redirects, or shell file readers.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         command: z.string().describe("Command to run."),
         session_id: z.string().optional().describe(config.requireBashSession && config.bashSessionId ? `Required bash session id for this server: ${config.bashSessionId}.` : "Optional bash session id. If configured on the server, a provided value must match it."),
         cwd: z.string().optional().describe("Working directory relative to workspace root. Default: ."),
@@ -1951,7 +1986,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       title: "Git Status",
       description: "Show git branch and changed files for the workspace.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().optional().describe("Optional file path relative to workspace root.")
       },
       annotations: READ_ONLY_ANNOTATIONS,
@@ -1987,7 +2022,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       title: "Git Diff",
       description: "Show current unstaged or staged git diff, optionally scoped to a file.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().optional().describe("Optional file path relative to workspace root."),
         staged: z.boolean().optional().describe("Show staged diff. Default: false."),
         include_diff: z.boolean().optional().describe("Include the raw unified diff in the response. Default: true. Set false for stats-only checks.")
@@ -2042,7 +2077,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       title: "Show Changes",
       description: "Summarize the current workspace changes in one review-oriented result with git status, diff stats, and optional diff. Use this instead of bash git status, bash git diff, git_status, or git_diff when reviewing work.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().optional().describe("Optional file path relative to workspace root."),
         staged: z.boolean().optional().describe("Show staged diff. Default: false."),
         include_diff: z.boolean().optional().describe("Include the unified diff. Default: true."),
@@ -2159,7 +2194,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       title: "Read Handoff",
       description: "Read the shared .ai-bridge planning files used for ChatGPT-to-agent coordination.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace.")
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session.")
       },
       annotations: READ_ONLY_ANNOTATIONS,
       _meta: {
@@ -2190,7 +2225,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       description:
         "Read-only long-poll of the local handoff run state so ChatGPT can stay the planner/reviewer while a local executor runs. Reads .ai-bridge/handoff-run-state.json and returns the run status plus status/diff/log/test excerpts. It never starts processes or runs shell commands; it only observes local handoff state written by execute-handoff/watch-handoff/loop-handoff.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         plan_hash: z.string().optional().describe("Expected current-plan.md hash. If set, only a terminal run with this plan_hash counts as completed."),
         since_iteration: z.number().int().min(0).optional().describe("Only treat a run with iteration greater than this as the awaited completion."),
         max_wait_seconds: z.number().int().min(1).max(60).optional().describe("Maximum seconds to long-poll before returning the current state. Default: 20."),
@@ -2359,7 +2394,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       description:
         "Load Codex-style workspace context in one call: AGENTS instructions for a target path, .ai-bridge handoff files, and optional git status/diff.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         target_path: z.string().optional().describe("Workspace-relative file or directory whose AGENTS instruction chain should be loaded. Default: ."),
         include_ai_bridge: z.boolean().optional().describe("Include .ai-bridge plan, agent status, diff, decisions, questions, and execution log. Default: true."),
         include_git: z.boolean().optional().describe("Include git status. Default: true."),
@@ -2404,7 +2439,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       description:
         "Create .ai-bridge/pro-context.md with repo tree, git state, selected files, and handoff context for high-context ChatGPT planning without live MCP tool calls.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         title: z.string().optional().describe("Markdown title for the context bundle."),
         selected_paths: z.array(z.string()).optional().describe("Specific workspace-relative files to include."),
         extra_globs: z.array(z.string()).optional().describe("Additional workspace-relative glob patterns to include, for example src/**/*.ts."),
@@ -2555,7 +2590,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       description:
         "Write .ai-bridge/current-plan.md for Codex, OpenCode, Pi, or another local implementation agent. This only creates handoff files; it does not execute local agent commands.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         agent: z.string().optional().describe("Target agent id, for example codex, opencode, pi, or custom. Default: custom."),
         agent_name: z.string().optional().describe("Human-readable agent name for custom agents."),
         model: z.string().optional().describe("Optional model identifier to include in the handoff plan."),
@@ -2622,7 +2657,7 @@ ${result.prompt}
       title: "Handoff To Codex",
       description: "Compatibility wrapper for handoff_to_agent with agent=codex.",
       inputSchema: {
-        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         title: z.string().optional().describe("Short task title."),
         plan: z.string().describe("Detailed implementation plan for Codex."),
         append: z.boolean().optional().describe("Append to existing current-plan.md instead of overwriting. Default: false.")

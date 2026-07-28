@@ -33,7 +33,7 @@
 
 ## 安装
 
-CodexPro 需要 Node.js 20+，以及能使用 Apps / Developer Mode 的 ChatGPT 账号。OpenAI 当前文档列出的 web 端 Developer Mode 账号范围包括 Pro、Plus、Business、Enterprise 和 Education。
+CodexPro 需要 Node.js 20+，以及当前能使用自定义 MCP App 的 ChatGPT 账号和 Web 界面。OpenAI 2026 年 7 月的文档说明：包含写入和修改操作的完整 MCP 目前面向 Business、Enterprise 和 Edu；Pro 目前只能连接 read/fetch 权限的 MCP App。该文档没有把 Plus 列为支持自定义 MCP 的账号层级。
 
 先安装 CLI：
 
@@ -70,6 +70,32 @@ CodexPro 不是速率限制绕过工具。它不会绕过、提升、合并、�
 
 如果 Codex 当前工作流暂时不可用，而你的 ChatGPT 页面仍然可用，CodexPro 可以让你继续在同一个本地仓库上工作。反过来也一样：ChatGPT 负责高上下文规划，Codex、OpenCode、Pi 或其他本地执行器负责终端里的实际执行。
 
+## 多项目
+
+在主项目的 profile 里明确加入其他项目：
+
+```bash
+codexpro settings set --project ~/code/web --project ~/code/api
+codexpro start
+```
+
+`open_workspace` 会为当前 MCP session 选择一个已允许的项目。之后其他工具可以省略 `workspace_id`，直接使用当前选择。`open_current_workspace` 会切回启动时的主项目。
+
+项目选择按 MCP session 隔离，但 ChatGPT conversation 是否一一对应独立 MCP session 由客户端决定。需要严格的进程隔离、不同权限或不同公网地址时，仍然应该启动多个 CodexPro 进程。
+
+移除保存的额外项目：
+
+```bash
+codexpro settings set --clear-projects
+```
+
+## 重启发布版编码体验
+
+- `view_image` 会把 PNG、JPEG、GIF、WebP 作为原生 MCP 图片内容返回，ChatGPT 可以直接检查截图和视觉资源。
+- `read` 会返回 SHA-256。多个 session 可能同时修改一个文件时，把它作为 `expected_sha256` 传给 `write` 或 `edit`；文件已变化时操作会失败，不会静默覆盖新内容。
+- 文件写入采用同目录原子替换，并保留已有文件权限。
+- `codexpro start --headless` 不会提问、复制链接、打开浏览器或显示终端控制面板。就绪后输出一行 `CODEXPRO_READY`，在本地运行状态中记录受监管的 runtime PID，收到信号时清理；HTTP runtime 意外退出时 launcher 以非零状态退出。
+
 ## 适合谁
 
 CodexPro 适合已经有 ChatGPT Apps / Developer Mode 权限并希望做本地开发的人：
@@ -80,7 +106,7 @@ CodexPro 适合已经有 ChatGPT Apps / Developer Mode 权限并希望做本地�
 - 想在某些模型不能调用工具时，导出一个持久上下文包给它做规划。
 - 想把 ChatGPT 的计划交给 Codex、OpenCode、Pi 或自定义本地代理执行。
 
-当前测试显示，ChatGPT Free / Go 账号不暴露 CodexPro 需要的 Apps / Developer Mode 创建流程。请使用 ChatGPT 中能看到 Apps / Developer Mode 的账号层级。
+账号权限和具体模型界面的工具调用能力是两回事，而且可用范围可能变化。请以 ChatGPT 当前界面和 OpenAI 最新文档为准。
 
 ## 它能做什么
 
@@ -441,8 +467,8 @@ q      停止 CodexPro
 
 核心结论：
 
-- 需要能访问 Apps / Developer Mode 的 ChatGPT 账号。
-- Free / Go 在当前测试中不支持这个 App 创建流程。
+- 需要当前能访问自定义 MCP App 的 ChatGPT 账号和 Web 界面。
+- 完整写入能力目前以 Business、Enterprise 和 Edu 为准；Pro 目前只支持 read/fetch 权限。
 - CodexPro 不绕过任何速率限制。
 - 某些 Pro / planning 模型界面不能直接连接 MCP 工具，使用 `pro-bundle` 作为上下文回退。
 - quick tunnel 每次重启 URL 会变。

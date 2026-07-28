@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { minimatch } from "minimatch";
 import type { CodexProConfig } from "./config.js";
 import type { Workspace } from "./guard.js";
@@ -41,6 +41,43 @@ export interface DiffResult {
 
 export function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
+}
+
+async function atomicWriteText(absPath: string, content: string): Promise<void> {
+  const parent = path.dirname(absPath);
+  const basename = path.basename(absPath);
+  const tempPath = path.join(parent, `.${basename}.codexpro-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
+  let handle: fsp.FileHandle | undefined;
+  try {
+    let mode = 0o666;
+    try {
+      mode = (await fsp.stat(absPath)).mode & 0o777;
+    } catch {}
+    handle = await fsp.open(tempPath, "wx", mode);
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await fsp.rename(tempPath, absPath);
+  } catch (error) {
+    try {
+      await handle?.close();
+    } catch {}
+    try {
+      await fsp.unlink(tempPath);
+    } catch {}
+    throw error;
+  }
+}
+
+function assertExpectedSha(expectedSha256: string | undefined, actualText: string, relPath: string): void {
+  if (!expectedSha256) return;
+  const actualSha256 = sha256(actualText);
+  if (actualSha256.toLowerCase() !== expectedSha256.toLowerCase()) {
+    throw new CodexProError(
+      `File changed since it was read: ${relPath}. Expected SHA-256 ${expectedSha256}, found ${actualSha256}. Read the file again before writing.`
+    );
+  }
 }
 
 // ponytail: bounded scan window covers normal source files over the read cap; add a separate knob only if real repos need larger files.
@@ -244,7 +281,7 @@ export async function writeTextFile(
   workspace: Workspace,
   filePath: string,
   content: string,
-  options: { createDirs?: boolean; overwrite?: boolean } = {}
+  options: { createDirs?: boolean; overwrite?: boolean; expectedSha256?: string } = {}
 ): Promise<{ path: string; bytes: number; sha256: string; existed: boolean; diff: DiffResult }> {
   const resolved = guard.resolve(workspace, filePath, { forWrite: true });
   const contentBytes = Buffer.byteLength(content, "utf8");
@@ -269,12 +306,16 @@ export async function writeTextFile(
   if (existed && options.overwrite === false) {
     throw new CodexProError(`File already exists and overwrite=false: ${resolved.relPath}`);
   }
+  if (options.expectedSha256 && !existed) {
+    throw new CodexProError(`File does not exist, so expected_sha256 cannot be verified: ${resolved.relPath}`);
+  }
+  if (existed) assertExpectedSha(options.expectedSha256, oldText, resolved.relPath);
   if (options.createDirs) {
     await fsp.mkdir(path.dirname(resolved.absPath), { recursive: true });
   }
 
   const diff = makeUnifiedDiff(oldText, content, resolved.relPath);
-  await fsp.writeFile(resolved.absPath, content, "utf8");
+  await atomicWriteText(resolved.absPath, content);
   return { path: resolved.relPath, bytes: contentBytes, sha256: sha256(content), existed, diff };
 }
 
@@ -285,12 +326,13 @@ export async function editTextFile(
   filePath: string,
   oldText: string,
   newText: string,
-  options: { replaceAll?: boolean; expectedReplacements?: number } = {}
+  options: { replaceAll?: boolean; expectedReplacements?: number; expectedSha256?: string } = {}
 ): Promise<{ path: string; replacements: number; bytes: number; sha256: string; diff: DiffResult }> {
   if (!oldText) throw new CodexProError("old_text must not be empty.");
   const resolved = guard.resolve(workspace, filePath, { forWrite: true });
   await guard.assertTextFile(resolved.absPath, Math.max(config.maxWriteBytes, config.maxReadBytes));
   const before = await fsp.readFile(resolved.absPath, "utf8");
+  assertExpectedSha(options.expectedSha256, before, resolved.relPath);
   const occurrences = before.split(oldText).length - 1;
   if (occurrences === 0) {
     throw new CodexProError(`old_text was not found in ${resolved.relPath}. Read the file and retry with an exact snippet.`);
@@ -322,7 +364,7 @@ export async function editTextFile(
   }
 
   const diff = makeUnifiedDiff(before, after, resolved.relPath);
-  await fsp.writeFile(resolved.absPath, after, "utf8");
+  await atomicWriteText(resolved.absPath, after);
   return { path: resolved.relPath, replacements, bytes: afterBytes, sha256: sha256(after), diff };
 }
 

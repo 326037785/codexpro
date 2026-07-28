@@ -2,9 +2,7 @@
 
 ## 我应该用什么 ChatGPT 账号？
 
-使用能访问 Apps / Developer Mode 的 ChatGPT 账号。OpenAI 当前文档列出的 web 端 Developer Mode 账号范围包括 Pro、Plus、Business、Enterprise 和 Education。
-
-当前测试显示，Free / Go 账号不暴露 CodexPro 需要的 App 创建流程。
+使用当前能访问自定义 MCP App 的 ChatGPT 账号和 Web 界面。OpenAI 2026 年 7 月的文档说明：包含写入和修改操作的完整 MCP 目前面向 Business、Enterprise 和 Edu；Pro 目前只能连接 read/fetch 权限的 MCP App。该文档没有把 Plus 列为支持自定义 MCP 的账号层级。
 
 CodexPro 不解锁 Developer Mode，不解锁模型，不绕过账号限制，也不提供账号访问。它只连接你自己的 ChatGPT App 界面和你自己的本地仓库。
 
@@ -91,7 +89,7 @@ codexpro pro-bundle --root /path/to/repo --copy
 
 账号权限和模型工具能力是两回事。
 
-Plus / Pro 可以暴露 Apps / Developer Mode，但某个具体模型界面仍然可能不能调用连接器或 MCP 工具。遇到这种情况时，用 `codexpro pro-bundle --copy` 导出上下文，再把计划交给本地代理执行。
+账号权限和具体模型界面的工具调用能力是两回事，而且可用范围可能变化。遇到不能调用 MCP 工具的界面时，用 `codexpro pro-bundle --copy` 导出上下文，再把计划交给本地代理执行。
 
 ## ChatGPT 能通过 CodexPro 看到什么？
 
@@ -230,7 +228,16 @@ Cloudflare quick tunnel 是一次性的临时地址。每次重新启动 tunnel�
 
 ## 同时跑两个仓库怎么办？
 
-给每个仓库使用不同本地端口和不同 tunnel hostname。
+如果只是希望通过同一个 connector 切换项目，可以先在主项目保存额外项目：
+
+```bash
+codexpro settings set --project ~/code/repo-b --project ~/code/repo-c
+codexpro start
+```
+
+`open_workspace` 会把已允许的项目设为当前 MCP session 的选择。之后其他工具可以省略 `workspace_id`。`open_current_workspace` 会切回启动时的主项目。
+
+项目选择按 MCP session 隔离，但 ChatGPT conversation 不保证和 MCP session 一一对应。需要严格隔离时，请为每个仓库使用不同本地端口和不同 tunnel hostname。
 
 示例：
 
@@ -240,6 +247,14 @@ repo B: port 8788, hostname B
 ```
 
 分别在两个仓库里运行 `codexpro setup` 并保存 profile。
+
+## 多个 ChatGPT session 怎么避免互相覆盖？
+
+项目选择按 session 隔离。对于共享文件，先读取文件，再把返回的 SHA-256 作为 `expected_sha256` 传给 `write` 或 `edit`。如果读取之后文件已经变化，CodexPro 会拒绝操作；成功的写入采用原子替换。
+
+这能防止旧内容静默覆盖新内容，但不会把 CodexPro 变成协同 merge server。大范围重叠修改仍建议使用独立 worktree。
+
+后台运行或交给 service manager 时，使用 `codexpro start --headless`。它不会提问、访问剪贴板或打开浏览器；会用 `CODEXPRO_READY` 报告就绪，HTTP runtime 意外退出时 launcher 会以非零状态退出。
 
 ## 能不能用 codexpro.github.io？
 

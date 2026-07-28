@@ -60,15 +60,22 @@ function closestExistingParent(absPath: string): string {
 
 export class WorkspaceManager {
   private readonly workspaces = new Map<string, Workspace>();
+  private selectedWorkspaceId?: string;
 
   constructor(private readonly config: CodexProConfig) {}
 
   defaultWorkspace(): Workspace {
     const existing = [...this.workspaces.values()].find((workspace) => workspace.root === this.config.defaultRoot);
-    return existing ?? this.openWorkspace(this.config.defaultRoot);
+    return existing ?? this.openWorkspace(this.config.defaultRoot, { select: false });
   }
 
-  openWorkspace(rootInput?: string): Workspace {
+  selectDefaultWorkspace(): Workspace {
+    const workspace = this.defaultWorkspace();
+    this.selectedWorkspaceId = workspace.id;
+    return workspace;
+  }
+
+  openWorkspace(rootInput?: string, options: { select?: boolean } = {}): Workspace {
     const requested = rootInput?.trim() ? expandHome(rootInput.trim()) : this.config.defaultRoot;
     const resolved = path.resolve(requested);
     if (!fs.existsSync(resolved)) {
@@ -87,17 +94,31 @@ export class WorkspaceManager {
     }
 
     const existing = [...this.workspaces.values()].find((workspace) => workspace.root === realRoot);
-    if (existing) return existing;
+    if (existing) {
+      if (options.select !== false) this.selectedWorkspaceId = existing.id;
+      return existing;
+    }
 
     const id = workspaceIdForRoot(realRoot);
     const workspace = { id, root: realRoot, openedAt: new Date().toISOString() };
     this.workspaces.set(id, workspace);
+    if (options.select !== false) this.selectedWorkspaceId = id;
     return workspace;
   }
 
   getWorkspace(id?: string): Workspace {
-    if (!id) return this.defaultWorkspace();
+    if (!id) {
+      if (this.selectedWorkspaceId) {
+        const selected = this.workspaces.get(this.selectedWorkspaceId);
+        if (selected) return selected;
+      }
+      return this.selectDefaultWorkspace();
+    }
     const workspace = this.workspaces.get(id);
+    if (!workspace) {
+      const configuredRoot = this.config.allowedRoots.find((allowedRoot) => workspaceIdForRoot(allowedRoot) === id);
+      if (configuredRoot) return this.openWorkspace(configuredRoot, { select: false });
+    }
     if (!workspace) {
       throw new CodexProError(`Unknown workspace_id: ${id}. Call open_workspace first.`);
     }
@@ -106,6 +127,10 @@ export class WorkspaceManager {
 
   listWorkspaces(): Workspace[] {
     return [...this.workspaces.values()];
+  }
+
+  currentWorkspaceId(): string {
+    return this.getWorkspace().id;
   }
 }
 

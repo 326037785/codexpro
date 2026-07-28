@@ -50,7 +50,9 @@ Usage:
 Options:
   --root <dir>              Workspace root. Default: current directory.
   --from-root <dir>         Copy saved settings from another workspace with settings use.
-  --allow-root <dir>        Additional allowed root. Can be repeated.
+  --project <dir>           Additional allowed project. settings set saves it. Can be repeated.
+  --clear-projects          Remove saved additional projects with settings set.
+  --allow-root <dir>        Additional allowed root for this launch. Can be repeated.
   --allow-home              Allow opening any workspace under your home directory.
   --mode <agent|handoff|pro>
                              Default: agent.
@@ -112,6 +114,7 @@ Options:
   --copy-url                Copy the ChatGPT Server URL to clipboard. Default for public HTTPS URLs.
   --no-copy-url             Do not copy the Server URL.
   --open-chatgpt            Open ChatGPT connector settings after the URL is ready.
+  --headless                Run without prompts, clipboard, browser opening, or the control panel.
   --no-auth                 Disable bearer-token auth. Only allowed with --tunnel none.
   --log-requests            Print redacted HTTP request and tool-call logs from the local MCP server.
   connection-test           Start a read-only connector with request logging and no bash or tool cards.
@@ -174,6 +177,8 @@ Workspace settings:
   codexpro settings show
   codexpro settings list
   codexpro settings set --tunnel ngrok --hostname your-domain.ngrok-free.dev
+  codexpro settings set --project /path/to/another/repo
+  codexpro settings set --clear-projects
   codexpro settings use
   codexpro settings delete --yes
 
@@ -330,7 +335,9 @@ function parseArgs(argv) {
     else if (key === 'allow-implicit-review-verdict') out.allowImplicitReviewVerdict = true;
     else if (key === 'allow-review-pass-on-failure') out.allowReviewPassOnFailure = true;
     else if (key === 'open-chatgpt') out.openChatgpt = true;
+    else if (key === 'headless') out.headless = true;
     else if (key === 'no-profile') out.noProfile = true;
+    else if (key === 'clear-projects') out.clearProjects = true;
     else if (key === 'save-config') out.saveConfig = true;
     else if (key === 'no-save-config') out.noSaveConfig = true;
     else if (key === 'yes' || key === 'force') out.yes = true;
@@ -355,7 +362,7 @@ function parseArgs(argv) {
       const value = inlineValue ?? next;
       if (value === undefined || (inlineValue === undefined && value.startsWith('--'))) throw new Error(`Missing value for --${key}`);
       if (inlineValue === undefined) i += 1;
-      if (key === 'allow-root') out.allowRoots.push(value);
+      if (key === 'allow-root' || key === 'project') out.allowRoots.push(value);
       else out[key.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = value;
     }
   }
@@ -488,6 +495,16 @@ function realDir(input) {
   const stat = fs.statSync(resolved);
   if (!stat.isDirectory()) throw new Error(`Not a directory: ${resolved}`);
   return fs.realpathSync(resolved);
+}
+
+function configuredProjectRoots(root, args = {}, profile = {}) {
+  const saved = args.clearProjects
+    ? []
+    : Array.isArray(profile.allowedRoots)
+      ? profile.allowedRoots
+      : [];
+  const requested = Array.isArray(args.allowRoots) ? args.allowRoots : [];
+  return [...new Set([...saved, ...requested].map(realDir))].filter((projectRoot) => projectRoot !== root);
 }
 
 function resolveCodexDir(root, input) {
@@ -687,6 +704,7 @@ function saveRuntimeConnection(root, details, options = {}) {
     version: 1,
     root,
     pid: process.pid,
+    runtimePid: options.runtimePid ?? null,
     updatedAt: new Date().toISOString(),
     endpoint: details.endpoint,
     localBase: options.localBase ?? '',
@@ -733,6 +751,7 @@ function reusableProfilePayload(profile, overrides = {}) {
     root,
     updatedAt,
     profilePath,
+    allowedRoots,
     ...rest
   } = profile || {};
   return {
@@ -2747,9 +2766,9 @@ function printConnectorBlock(endpoint, token, options = {}) {
   const details = createConnectorDetails(endpoint, token, options.localBase ?? '');
   const { serverUrl } = details;
   const publicHttps = serverUrl.startsWith('https://');
-  const shouldCopy = options.copyUrl === true || (options.copyUrl !== false && publicHttps);
+  const shouldCopy = !options.headless && (options.copyUrl === true || (options.copyUrl !== false && publicHttps));
   const copied = shouldCopy ? copyToClipboard(serverUrl) : { ok: false, command: '' };
-  const opened = options.openChatgpt ? openUrl(details.chatgptSettingsUrl) : false;
+  const opened = !options.headless && options.openChatgpt ? openUrl(details.chatgptSettingsUrl) : false;
 
   const mode = options.mode ?? 'agent';
   const modeTitle = mode === 'agent' ? 'Agent' : mode === 'handoff' ? 'Handoff' : 'Pro planning';
@@ -2773,7 +2792,7 @@ function printConnectorBlock(endpoint, token, options = {}) {
     console.log('  URL        local HTTP only');
     console.log(serverUrl);
   }
-  if (options.openChatgpt) {
+  if (options.openChatgpt && !options.headless) {
     statusLine(opened ? 'ok' : 'warn', opened ? 'Opened ChatGPT connector settings' : 'Could not open ChatGPT automatically');
   }
   console.log('');
@@ -2788,8 +2807,12 @@ function printConnectorBlock(endpoint, token, options = {}) {
     console.log('  POST /mcp -> 2xx The MCP connection reached CodexPro successfully.');
     console.log('');
   }
-  console.log('Next: press Enter to open ChatGPT, paste the copied Server URL, choose Authentication: None.');
-  console.log('Keys: Enter open | c copy | o status | h help | q quit');
+  if (options.headless) {
+    console.log(`CODEXPRO_READY ${serverUrl}`);
+  } else {
+    console.log('Next: press Enter to open ChatGPT, paste the copied Server URL, choose Authentication: None.');
+    console.log('Keys: Enter open | c copy | o status | h help | q quit');
+  }
   return { ...details, copied, opened, mode, toolMode: options.toolMode ?? 'standard' };
 }
 
@@ -3101,6 +3124,7 @@ function profileFromPreference(root, args, profile, preference) {
   const widgetDomain = optionValue(args, profile, 'widgetDomain', ['CODEXPRO_WIDGET_DOMAIN'], '');
   const existingToken = optionValue(args, profile, 'token', ['CODEXPRO_HTTP_TOKEN', 'CODEBASE_BRIDGE_HTTP_TOKEN'], '');
   const token = preference.tunnel === 'none' ? existingToken : stableToken(existingToken);
+  const allowedRoots = configuredProjectRoots(root, args, profile);
   return {
     port,
     mode,
@@ -3121,13 +3145,14 @@ function profileFromPreference(root, args, profile, preference) {
     ...(toolMode ? { toolMode } : {}),
     ...(widgetDomain ? { widgetDomain } : {}),
     ...toolCardsProfileEntry(args, profile),
+    ...(allowedRoots.length ? { allowedRoots } : {}),
     ...(args.noInstallCloudflared ? { noInstallCloudflared: true } : {}),
     root
   };
 }
 
 async function maybeConfigureFirstRun(root, args, profile) {
-  if (profile.profilePath || !process.stdin.isTTY || !process.stdout.isTTY || process.env.CI || hasExplicitTunnelInput(args)) {
+  if (profile.profilePath || args.headless || !process.stdin.isTTY || !process.stdout.isTTY || process.env.CI || hasExplicitTunnelInput(args)) {
     return profile;
   }
 
@@ -3327,6 +3352,7 @@ async function runSetupWizard(argv) {
     const saveAnswer = await ask(rl, 'Save this setup for future runs from this workspace?', saveDefault);
     const shouldSave = !['n', 'no'].includes(saveAnswer.trim().toLowerCase());
     if (shouldSave) {
+      const allowedRoots = configuredProjectRoots(root, defaults, profile);
       const savedPath = saveWorkspaceProfile(root, {
         port,
         mode,
@@ -3347,6 +3373,7 @@ async function runSetupWizard(argv) {
         ...(toolMode ? { toolMode } : {}),
         ...(widgetDomain ? { widgetDomain } : {}),
         ...toolCardsEntry,
+        ...(allowedRoots.length ? { allowedRoots } : {}),
         ...(defaults.noInstallCloudflared ? { noInstallCloudflared: true } : {})
       });
       statusLine('ok', `Saved workspace profile: ${savedPath}`);
@@ -3398,6 +3425,9 @@ function printProfile(root, profile) {
     ...(safe.codexDir ? [labelValue('Codex dir', safe.codexDir)] : []),
     ...(safe.bashSession ? [labelValue('Bash session', `${safe.bashSession}${safe.requireBashSession ? ' required' : ''}`)] : []),
     ...(safe.widgetDomain ? [labelValue('Widget origin', safe.widgetDomain)] : []),
+    ...(Array.isArray(safe.allowedRoots) && safe.allowedRoots.length
+      ? [labelValue('Projects', safe.allowedRoots.join(', '))]
+      : []),
     ...(safe.noInstallCloudflared ? [labelValue('cloudflared', 'manual install only')] : []),
     ...(safe.token ? [labelValue('Token', safe.token)] : []),
     ...(safe.cloudflareToken ? [labelValue('Cloudflare token', safe.cloudflareToken)] : [])
@@ -3455,6 +3485,7 @@ function saveSettingsFromArgs(root, args, profile) {
   const token = tunnel === 'none'
     ? optionValue(args, profile, 'token', ['CODEXPRO_HTTP_TOKEN', 'CODEBASE_BRIDGE_HTTP_TOKEN'], profile.token ?? '')
     : stableToken(optionValue(args, profile, 'token', ['CODEXPRO_HTTP_TOKEN', 'CODEBASE_BRIDGE_HTTP_TOKEN'], profile.token ?? ''));
+  const allowedRoots = configuredProjectRoots(root, args, profile);
   const savedPath = saveWorkspaceProfile(root, {
     port,
     mode,
@@ -3475,6 +3506,7 @@ function saveSettingsFromArgs(root, args, profile) {
     ...(toolMode ? { toolMode } : {}),
     ...(widgetDomain ? { widgetDomain } : {}),
     ...toolCardsProfileEntry(args, profile),
+    ...(allowedRoots.length ? { allowedRoots } : {}),
     ...(args.noInstallCloudflared ?? profile.noInstallCloudflared ? { noInstallCloudflared: true } : {})
   });
   statusLine('ok', `Saved workspace settings: ${savedPath}`);
@@ -3687,6 +3719,28 @@ function runControlPanel(details, cleanup = cleanupChildren) {
   });
 }
 
+function waitForUnexpectedRuntimeExit(server, cleanup = cleanupChildren) {
+  return new Promise((_, reject) => {
+    const fail = (code, signal, error) => {
+      cleanup();
+      const detail = error
+        ? error instanceof Error ? error.message : String(error)
+        : `code=${code ?? 'null'} signal=${signal ?? 'null'}`;
+      reject(new Error(`CodexPro HTTP runtime exited unexpectedly (${detail}).`));
+    };
+    if (server.exitCode !== null || server.signalCode !== null) {
+      fail(server.exitCode, server.signalCode);
+      return;
+    }
+    server.once('error', (error) => fail(null, null, error));
+    server.once('exit', (code, signal) => fail(code, signal));
+  });
+}
+
+function holdRuntime(server, details, cleanup, headless) {
+  return headless ? waitForUnexpectedRuntimeExit(server, cleanup) : runControlPanel(details, cleanup);
+}
+
 async function main() {
   let argv = process.argv.slice(2);
   let connectionTest = false;
@@ -3772,6 +3826,7 @@ async function main() {
   }
   if (argv[0] === 'help') argv[0] = '--help';
   const args = parseArgs(argv);
+  const headless = Boolean(args.headless);
   if (connectionTest) {
     args.mode = 'agent';
     args.toolMode = 'standard';
@@ -3821,7 +3876,7 @@ async function main() {
     throw new Error('--mode must be agent, handoff, or pro');
   }
 
-  const allowRoots = [root, ...(args.allowRoots ?? [])].map(realDir);
+  const allowRoots = [root, ...configuredProjectRoots(root, args, profile)];
   const host = optionValue(args, profile, 'host', ['CODEXPRO_HOST'], '127.0.0.1');
   if (args.noAuth && (tunnel !== 'none' || !isLoopbackHost(host))) {
     throw new Error('--no-auth is only allowed with --tunnel none on a loopback host.');
@@ -3882,6 +3937,7 @@ async function main() {
 
   printBox('CodexPro start', [
     labelValue('Workspace', root),
+    ...(allowRoots.length > 1 ? [labelValue('Projects', allowRoots.slice(1).join(', '))] : []),
     labelValue('Mode', `${mode}  tools=${toolMode}  write=${write}  bash=${bash}`),
     labelValue('Bash transcript', bashTranscript),
     labelValue('Codex sessions', codexSessions),
@@ -3929,7 +3985,8 @@ async function main() {
     bashSession,
     requireBashSession,
     toolCards,
-    connectionTest
+    connectionTest,
+    runtimePid: server.pid ?? null
   };
 
   if (tunnel === 'none') {
@@ -3939,6 +3996,7 @@ async function main() {
     }
     const details = printConnectorBlock(`${localBase}/mcp`, token, {
       localBase,
+      headless,
       copyUrl: args.copyUrl ? true : args.noCopyUrl ? false : undefined,
       openChatgpt: Boolean(args.openChatgpt),
       mode,
@@ -3953,7 +4011,7 @@ async function main() {
       connectionTest
     });
     saveRuntimeConnection(root, details, runtimeOptions);
-    await runControlPanel(details, cleanup);
+    await holdRuntime(server, details, cleanup, headless);
     return;
   }
 
@@ -3983,6 +4041,7 @@ async function main() {
     }
     const details = printConnectorBlock(`${publicBase}/mcp`, token, {
       localBase,
+      headless,
       copyUrl: args.noCopyUrl ? false : true,
       openChatgpt: Boolean(args.openChatgpt),
       mode,
@@ -3997,7 +4056,7 @@ async function main() {
       connectionTest
     });
     saveRuntimeConnection(root, details, runtimeOptions);
-    await runControlPanel(details, cleanup);
+    await holdRuntime(server, details, cleanup, headless);
     return;
   }
 
@@ -4028,6 +4087,7 @@ async function main() {
     }
     const details = printConnectorBlock(`${publicBase}/mcp`, token, {
       localBase,
+      headless,
       copyUrl: args.noCopyUrl ? false : true,
       openChatgpt: Boolean(args.openChatgpt),
       mode,
@@ -4042,7 +4102,7 @@ async function main() {
       connectionTest
     });
     saveRuntimeConnection(root, details, runtimeOptions);
-    await runControlPanel(details, cleanup);
+    await holdRuntime(server, details, cleanup, headless);
     return;
   }
 
@@ -4053,6 +4113,7 @@ async function main() {
     console.error('Downloads: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/');
     const details = printConnectorBlock(`${localBase}/mcp`, token, {
       localBase,
+      headless,
       copyUrl: args.copyUrl ? true : false,
       openChatgpt: Boolean(args.openChatgpt),
       mode,
@@ -4067,7 +4128,7 @@ async function main() {
       connectionTest
     });
     saveRuntimeConnection(root, details, runtimeOptions);
-    await runControlPanel(details, cleanup);
+    await holdRuntime(server, details, cleanup, headless);
     return;
   }
 
@@ -4096,6 +4157,7 @@ async function main() {
     }
     const details = printConnectorBlock(`${publicBase}/mcp`, token, {
       localBase,
+      headless,
       copyUrl: args.noCopyUrl ? false : true,
       openChatgpt: Boolean(args.openChatgpt),
       mode,
@@ -4110,7 +4172,7 @@ async function main() {
       connectionTest
     });
     saveRuntimeConnection(root, details, runtimeOptions);
-    await runControlPanel(details, cleanup);
+    await holdRuntime(server, details, cleanup, headless);
     return;
   }
 
@@ -4165,6 +4227,7 @@ async function main() {
   }
   const details = printConnectorBlock(`${publicBase}/mcp`, token, {
     localBase,
+    headless,
     copyUrl: args.noCopyUrl ? false : true,
     openChatgpt: Boolean(args.openChatgpt),
     mode,
@@ -4179,7 +4242,7 @@ async function main() {
     connectionTest
   });
   saveRuntimeConnection(root, details, runtimeOptions);
-  await runControlPanel(details, cleanup);
+  await holdRuntime(server, details, cleanup, headless);
 }
 
 main().catch((error) => {

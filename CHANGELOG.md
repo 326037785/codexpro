@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Added saved additional projects with `codexpro settings set --project <path>`, session-local workspace selection through the existing `open_workspace` tool, and `--clear-projects` for removing the saved allowlist.
+- Isolated workspace selection between HTTP MCP sessions while preserving explicit workspace-id access for configured roots, with stdio, HTTP, profile, and regression coverage.
+- Added native workspace image inspection for PNG, JPEG, GIF, and WebP files through `view_image`.
+- Added optional SHA-256 preconditions and atomic replacement for `write` and `edit`, preventing stale multi-session edits from silently replacing newer file content.
+- Added `codexpro start --headless` with non-interactive readiness output, supervised HTTP-runtime failure propagation, runtime PID status, and signal cleanup.
+- Updated the MCP SDK and affected transitive HTTP, URI, and pattern-matching dependencies to patched releases; the release audit now reports zero known vulnerabilities.
+
 ## 0.29.0 (2026-07-13)
 
 - Replaced the heavy v9 Apps widget with a compact, host-theme-aware v10 card for selected user-visible results: workspace, analysis, changes, Git status, handoff, and terminal verification.

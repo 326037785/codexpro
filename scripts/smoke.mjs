@@ -530,6 +530,98 @@ await client.request('tools/call', {
 if (await fs.readFile(path.join(tmp, 'concurrent.txt'), 'utf8') !== 'version three\n') {
   throw new Error('conflict-safe atomic edit did not update the file');
 }
+for (let attempt = 0; attempt < 12; attempt += 1) {
+  const original = `race original ${attempt}\n`;
+  await fs.writeFile(path.join(tmp, 'race.txt'), original, 'utf8');
+  const raceRead = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: 'race.txt' } });
+  const raceResults = await Promise.all([
+    client.request('tools/call', {
+      name: 'edit',
+      arguments: {
+        workspace_id: ws,
+        path: 'race.txt',
+        old_text: original.trim(),
+        new_text: `race winner a ${attempt}`,
+        expected_sha256: raceRead.structuredContent.sha256
+      }
+    }),
+    client.request('tools/call', {
+      name: 'edit',
+      arguments: {
+        workspace_id: ws,
+        path: 'race.txt',
+        old_text: original.trim(),
+        new_text: `race winner b ${attempt}`,
+        expected_sha256: raceRead.structuredContent.sha256
+      }
+    })
+  ]);
+  const raceSuccesses = raceResults.filter((result) => !result.isError);
+  const raceFailures = raceResults.filter((result) => result.isError);
+  if (raceSuccesses.length !== 1 || raceFailures.length !== 1) {
+    throw new Error(`expected exactly one concurrent SHA edit to succeed: ${JSON.stringify(raceResults)}`);
+  }
+  const raceFailureText = raceFailures[0].content?.find?.((part) => part.type === 'text')?.text ?? '';
+  if (!/File changed since it was read/.test(raceFailureText)) {
+    throw new Error(`concurrent SHA edit failed for the wrong reason: ${raceFailureText}`);
+  }
+}
+if (process.platform !== 'win32') {
+  const canonicalDir = path.join(tmp, 'canonical-lock-target');
+  const canonicalAlias = path.join(tmp, 'canonical-lock-alias');
+  await fs.mkdir(canonicalDir, { recursive: true });
+  await fs.writeFile(path.join(canonicalDir, 'shared.txt'), 'canonical original\n', 'utf8');
+  await fs.symlink(canonicalDir, canonicalAlias, 'dir');
+  const canonicalRead = await client.request('tools/call', {
+    name: 'read',
+    arguments: { workspace_id: ws, path: 'canonical-lock-target/shared.txt' }
+  });
+  const canonicalRace = await Promise.all([
+    client.request('tools/call', {
+      name: 'edit',
+      arguments: {
+        workspace_id: ws,
+        path: 'canonical-lock-target/shared.txt',
+        old_text: 'canonical original',
+        new_text: 'canonical direct winner',
+        expected_sha256: canonicalRead.structuredContent.sha256
+      }
+    }),
+    client.request('tools/call', {
+      name: 'edit',
+      arguments: {
+        workspace_id: ws,
+        path: 'canonical-lock-alias/shared.txt',
+        old_text: 'canonical original',
+        new_text: 'canonical alias winner',
+        expected_sha256: canonicalRead.structuredContent.sha256
+      }
+    })
+  ]);
+  if (canonicalRace.filter((result) => !result.isError).length !== 1 || canonicalRace.filter((result) => result.isError).length !== 1) {
+    throw new Error(`canonical-path write lock did not serialize aliases: ${JSON.stringify(canonicalRace)}`);
+  }
+}
+if (process.platform !== 'win32') {
+  const permissionPath = path.join(tmp, 'permissions.txt');
+  await fs.writeFile(permissionPath, 'permission before\n', 'utf8');
+  await fs.chmod(permissionPath, 0o666);
+  const permissionRead = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: 'permissions.txt' } });
+  await client.request('tools/call', {
+    name: 'edit',
+    arguments: {
+      workspace_id: ws,
+      path: 'permissions.txt',
+      old_text: 'permission before',
+      new_text: 'permission after',
+      expected_sha256: permissionRead.structuredContent.sha256
+    }
+  });
+  const finalMode = (await fs.stat(permissionPath)).mode & 0o7777;
+  if (finalMode !== 0o666) {
+    throw new Error(`atomic edit changed existing permissions from 0666 to ${finalMode.toString(8)}`);
+  }
+}
 const symlinkRead = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: symlinkEscapePath } });
 if (!symlinkRead.isError) throw new Error('symlink escape read was not blocked');
 for (const linkPath of danglingSymlinks) {

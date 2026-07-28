@@ -43,18 +43,59 @@ export function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+const fileWriteLocks = new Map<string, Promise<void>>();
+
+function normalizeLockKey(absPath: string): string {
+  const normalized = path.normalize(absPath);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+async function canonicalWriteKey(absPath: string): Promise<string> {
+  try {
+    return normalizeLockKey(await fsp.realpath(absPath));
+  } catch {}
+
+  let current = path.dirname(absPath);
+  const suffix = [path.basename(absPath)];
+  while (path.dirname(current) !== current) {
+    try {
+      return normalizeLockKey(path.join(await fsp.realpath(current), ...suffix));
+    } catch {
+      suffix.unshift(path.basename(current));
+      current = path.dirname(current);
+    }
+  }
+  return normalizeLockKey(path.resolve(absPath));
+}
+
+async function acquireFileWriteLock(absPath: string): Promise<() => void> {
+  const key = await canonicalWriteKey(absPath);
+  const previous = fileWriteLocks.get(key) ?? Promise.resolve();
+  let releaseCurrent!: () => void;
+  const current = new Promise<void>((resolve) => {
+    releaseCurrent = resolve;
+  });
+  fileWriteLocks.set(key, current);
+  await previous;
+  return () => {
+    releaseCurrent();
+    if (fileWriteLocks.get(key) === current) fileWriteLocks.delete(key);
+  };
+}
+
 async function atomicWriteText(absPath: string, content: string): Promise<void> {
   const parent = path.dirname(absPath);
   const basename = path.basename(absPath);
   const tempPath = path.join(parent, `.${basename}.codexpro-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
   let handle: fsp.FileHandle | undefined;
   try {
-    let mode = 0o666;
+    let existingMode: number | undefined;
     try {
-      mode = (await fsp.stat(absPath)).mode & 0o777;
+      existingMode = (await fsp.stat(absPath)).mode & 0o7777;
     } catch {}
-    handle = await fsp.open(tempPath, "wx", mode);
+    handle = await fsp.open(tempPath, "wx", existingMode ?? 0o666);
     await handle.writeFile(content, "utf8");
+    if (existingMode !== undefined) await handle.chmod(existingMode);
     await handle.sync();
     await handle.close();
     handle = undefined;
@@ -292,31 +333,36 @@ export async function writeTextFile(
     throw new CodexProError("Secret-looking content is blocked from write. Use placeholders such as [REDACTED_SECRET] in handoff files.");
   }
 
-  let oldText = "";
-  let existed = false;
+  const releaseWriteLock = await acquireFileWriteLock(resolved.absPath);
   try {
-    await guard.assertTextFile(resolved.absPath, Math.max(config.maxWriteBytes, config.maxReadBytes));
-    oldText = await fsp.readFile(resolved.absPath, "utf8");
-    existed = true;
-  } catch (error) {
-    if (error instanceof CodexProError && error.message.startsWith("Not a file")) throw error;
-    if (fs.existsSync(resolved.absPath)) throw error;
-  }
+    let oldText = "";
+    let existed = false;
+    try {
+      await guard.assertTextFile(resolved.absPath, Math.max(config.maxWriteBytes, config.maxReadBytes));
+      oldText = await fsp.readFile(resolved.absPath, "utf8");
+      existed = true;
+    } catch (error) {
+      if (error instanceof CodexProError && error.message.startsWith("Not a file")) throw error;
+      if (fs.existsSync(resolved.absPath)) throw error;
+    }
 
-  if (existed && options.overwrite === false) {
-    throw new CodexProError(`File already exists and overwrite=false: ${resolved.relPath}`);
-  }
-  if (options.expectedSha256 && !existed) {
-    throw new CodexProError(`File does not exist, so expected_sha256 cannot be verified: ${resolved.relPath}`);
-  }
-  if (existed) assertExpectedSha(options.expectedSha256, oldText, resolved.relPath);
-  if (options.createDirs) {
-    await fsp.mkdir(path.dirname(resolved.absPath), { recursive: true });
-  }
+    if (existed && options.overwrite === false) {
+      throw new CodexProError(`File already exists and overwrite=false: ${resolved.relPath}`);
+    }
+    if (options.expectedSha256 && !existed) {
+      throw new CodexProError(`File does not exist, so expected_sha256 cannot be verified: ${resolved.relPath}`);
+    }
+    if (existed) assertExpectedSha(options.expectedSha256, oldText, resolved.relPath);
+    if (options.createDirs) {
+      await fsp.mkdir(path.dirname(resolved.absPath), { recursive: true });
+    }
 
-  const diff = makeUnifiedDiff(oldText, content, resolved.relPath);
-  await atomicWriteText(resolved.absPath, content);
-  return { path: resolved.relPath, bytes: contentBytes, sha256: sha256(content), existed, diff };
+    const diff = makeUnifiedDiff(oldText, content, resolved.relPath);
+    await atomicWriteText(resolved.absPath, content);
+    return { path: resolved.relPath, bytes: contentBytes, sha256: sha256(content), existed, diff };
+  } finally {
+    releaseWriteLock();
+  }
 }
 
 export async function editTextFile(
@@ -330,42 +376,47 @@ export async function editTextFile(
 ): Promise<{ path: string; replacements: number; bytes: number; sha256: string; diff: DiffResult }> {
   if (!oldText) throw new CodexProError("old_text must not be empty.");
   const resolved = guard.resolve(workspace, filePath, { forWrite: true });
-  await guard.assertTextFile(resolved.absPath, Math.max(config.maxWriteBytes, config.maxReadBytes));
-  const before = await fsp.readFile(resolved.absPath, "utf8");
-  assertExpectedSha(options.expectedSha256, before, resolved.relPath);
-  const occurrences = before.split(oldText).length - 1;
-  if (occurrences === 0) {
-    throw new CodexProError(`old_text was not found in ${resolved.relPath}. Read the file and retry with an exact snippet.`);
-  }
-
-  let replacements: number;
-  let after: string;
-  if (options.replaceAll) {
-    after = before.split(oldText).join(newText);
-    replacements = occurrences;
-  } else {
-    if (occurrences !== 1) {
-      throw new CodexProError(`old_text matched ${occurrences} times. Provide a more specific old_text or set replace_all=true.`);
+  const releaseWriteLock = await acquireFileWriteLock(resolved.absPath);
+  try {
+    await guard.assertTextFile(resolved.absPath, Math.max(config.maxWriteBytes, config.maxReadBytes));
+    const before = await fsp.readFile(resolved.absPath, "utf8");
+    assertExpectedSha(options.expectedSha256, before, resolved.relPath);
+    const occurrences = before.split(oldText).length - 1;
+    if (occurrences === 0) {
+      throw new CodexProError(`old_text was not found in ${resolved.relPath}. Read the file and retry with an exact snippet.`);
     }
-    after = before.replace(oldText, newText);
-    replacements = 1;
-  }
 
-  if (typeof options.expectedReplacements === "number" && replacements !== options.expectedReplacements) {
-    throw new CodexProError(`Expected ${options.expectedReplacements} replacements but would perform ${replacements}.`);
-  }
+    let replacements: number;
+    let after: string;
+    if (options.replaceAll) {
+      after = before.split(oldText).join(newText);
+      replacements = occurrences;
+    } else {
+      if (occurrences !== 1) {
+        throw new CodexProError(`old_text matched ${occurrences} times. Provide a more specific old_text or set replace_all=true.`);
+      }
+      after = before.replace(oldText, newText);
+      replacements = 1;
+    }
 
-  const afterBytes = Buffer.byteLength(after, "utf8");
-  if (afterBytes > config.maxWriteBytes) {
-    throw new CodexProError(`Edited file would be too large (${afterBytes} bytes). Limit: ${config.maxWriteBytes} bytes.`);
-  }
-  if (hasSecretValue(after)) {
-    throw new CodexProError("Secret-looking content is blocked from edit. Use placeholders such as [REDACTED_SECRET] in handoff files.");
-  }
+    if (typeof options.expectedReplacements === "number" && replacements !== options.expectedReplacements) {
+      throw new CodexProError(`Expected ${options.expectedReplacements} replacements but would perform ${replacements}.`);
+    }
 
-  const diff = makeUnifiedDiff(before, after, resolved.relPath);
-  await atomicWriteText(resolved.absPath, after);
-  return { path: resolved.relPath, replacements, bytes: afterBytes, sha256: sha256(after), diff };
+    const afterBytes = Buffer.byteLength(after, "utf8");
+    if (afterBytes > config.maxWriteBytes) {
+      throw new CodexProError(`Edited file would be too large (${afterBytes} bytes). Limit: ${config.maxWriteBytes} bytes.`);
+    }
+    if (hasSecretValue(after)) {
+      throw new CodexProError("Secret-looking content is blocked from edit. Use placeholders such as [REDACTED_SECRET] in handoff files.");
+    }
+
+    const diff = makeUnifiedDiff(before, after, resolved.relPath);
+    await atomicWriteText(resolved.absPath, after);
+    return { path: resolved.relPath, replacements, bytes: afterBytes, sha256: sha256(after), diff };
+  } finally {
+    releaseWriteLock();
+  }
 }
 
 export async function ensureAiBridge(config: CodexProConfig, guard: PathGuard, workspace: Workspace): Promise<string[]> {

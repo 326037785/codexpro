@@ -203,7 +203,10 @@ function trimOutput(value: string, maxBytes: number): { value: string; truncated
 function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (!child.pid) return;
   if (process.platform === "win32") {
-    const args = ["/pid", String(child.pid), "/t", ...(signal === "SIGKILL" ? ["/f"] : [])];
+    // Windows does not provide Unix-style cooperative signals to process trees.
+    // Force the full tree while the parent PID still identifies its descendants;
+    // otherwise the shell can exit first and orphan an output-heavy grandchild.
+    const args = ["/pid", String(child.pid), "/t", "/f"];
     const result = spawnSync("taskkill", args, { stdio: "ignore", windowsHide: true });
     if (result.status !== 0) child.kill(signal);
     return;

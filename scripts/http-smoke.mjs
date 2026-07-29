@@ -828,10 +828,13 @@ const cliChild = spawn(process.execPath, [
 });
 try {
   await waitForHealthJson(`http://127.0.0.1:${cliPort}/healthz`);
-  const expectedCliCodexDir = path.join(await fs.realpath(cliRoot), '.codex');
+  const expectedCliCodexDir = await fs.realpath(path.join(cliRoot, '.codex'));
   await withClient(`http://127.0.0.1:${cliPort}/mcp`, async (client) => {
     const config = await callTool(client, 'server_config');
-    if (config.structuredContent.codexDir !== expectedCliCodexDir) {
+    const actualCliCodexDir = await fs.realpath(config.structuredContent.codexDir);
+    const comparableActual = process.platform === 'win32' ? actualCliCodexDir.toLowerCase() : actualCliCodexDir;
+    const comparableExpected = process.platform === 'win32' ? expectedCliCodexDir.toLowerCase() : expectedCliCodexDir;
+    if (comparableActual !== comparableExpected) {
       throw new Error(`relative --codex-dir resolved to ${config.structuredContent.codexDir}, expected ${expectedCliCodexDir}`);
     }
   });

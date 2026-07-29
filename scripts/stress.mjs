@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+const REQUEST_TIMEOUT_MS = process.platform === 'win32' ? 45_000 : 20_000;
+
 function assert(ok, message) {
   if (!ok) throw new Error(message);
 }
@@ -68,7 +70,11 @@ class McpStdioClient {
     const id = this.nextId++;
     this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`timeout waiting for ${method}\n${this.stderr}`)), 20000);
+      const operation = method === 'tools/call' && params?.name ? `${method}:${params.name}` : method;
+      const timer = setTimeout(
+        () => reject(new Error(`timeout waiting for ${operation} after ${REQUEST_TIMEOUT_MS} ms\n${this.stderr}`)),
+        REQUEST_TIMEOUT_MS
+      );
       timer.unref();
       this.pending.set(id, { resolve, reject, timer });
     });
@@ -107,7 +113,9 @@ async function makeFixture() {
   await fs.writeFile(path.join(root, 'AGENTS.md'), '# Stress Agents\n\nKeep checks local.\n', 'utf8');
   await fs.writeFile(path.join(root, 'demo.txt'), 'alpha\n--flag root\narrow -> value\n', 'utf8');
   await fs.writeFile(path.join(root, '.hidden.txt'), 'needle hidden\n', 'utf8');
-  await fs.writeFile(path.join(root, 'visible:123:file.txt'), 'needle colon path\n', 'utf8');
+  if (process.platform !== 'win32') {
+    await fs.writeFile(path.join(root, 'visible:123:file.txt'), 'needle colon path\n', 'utf8');
+  }
   await fs.mkdir(path.join(root, '.github', 'workflows'), { recursive: true });
   await fs.writeFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'name: ci\n', 'utf8');
   await fs.mkdir(path.join(root, 'many'), { recursive: true });
@@ -207,11 +215,13 @@ async function runFullModeStress(root) {
     });
     assert(hiddenSearch.structuredContent.matches.some((match) => match.path === '.hidden.txt'), 'include_hidden search missed hidden file');
 
-    const colonSearch = await client.request('tools/call', {
-      name: 'search',
-      arguments: { workspace_id: ws, query: 'needle colon path', max_results: 10 }
-    });
-    assert(colonSearch.structuredContent.matches.some((match) => match.path === 'visible:123:file.txt' && match.line === 1), `colon path search parsed incorrectly: ${JSON.stringify(colonSearch.structuredContent.matches)}`);
+    if (process.platform !== 'win32') {
+      const colonSearch = await client.request('tools/call', {
+        name: 'search',
+        arguments: { workspace_id: ws, query: 'needle colon path', max_results: 10 }
+      });
+      assert(colonSearch.structuredContent.matches.some((match) => match.path === 'visible:123:file.txt' && match.line === 1), `colon path search parsed incorrectly: ${JSON.stringify(colonSearch.structuredContent.matches)}`);
+    }
 
     const superRead = await client.request('tools/call', {
       name: 'codexpro',
@@ -408,7 +418,7 @@ async function runGlobalSkillStress(root) {
     assert(loadedByName.structuredContent.text.includes('# Global Only Skill'), 'load_skill did not load unique user skill by name');
   } finally {
     client?.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
@@ -456,7 +466,10 @@ async function runMcpInventoryStress() {
   await fs.writeFile(path.join(fakeHome, '.codex', 'config.toml'), toml, 'utf8');
   await fs.writeFile(path.join(fakeHome, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: cursorServers }), 'utf8');
 
-  const client = await initClient(root, { HOME: fakeHome });
+  const client = await initClient(root, {
+    HOME: fakeHome,
+    ...(process.platform === 'win32' ? { USERPROFILE: fakeHome } : {})
+  });
   try {
     const opened = await client.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
     const inventory = await client.request('tools/call', {
@@ -623,7 +636,7 @@ async function runBashOutputTerminationStress() {
     assert(retainedBytes < 9000, `output-limited bash retained too much output: ${retainedBytes} bytes`);
   } finally {
     client.close();
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
@@ -847,7 +860,7 @@ async function runAnalysisBudgetStress() {
     assert(limitedOutput.structuredContent.warnings.some((warning) => warning.includes('Structured output was limited')), 'inspect output limit did not report a warning');
   } finally {
     client.close();
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 

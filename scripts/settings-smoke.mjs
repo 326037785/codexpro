@@ -79,6 +79,17 @@ async function runtimeStatusPath(root, home) {
   return path.join(home, 'runtime', `${id}.json`);
 }
 
+async function writeNodeExecutable(filePath, lines, windowsCommandPath) {
+  await fs.writeFile(filePath, lines.join('\n'), { mode: 0o700 });
+  if (process.platform !== 'win32') return filePath;
+  const commandPath = windowsCommandPath ?? path.join(
+    path.dirname(filePath),
+    `${path.basename(filePath, path.extname(filePath))}.cmd`
+  );
+  await fs.writeFile(commandPath, `@echo off\r\n"${process.execPath}" "${filePath}" %*\r\n`, 'utf8');
+  return commandPath;
+}
+
 async function getFreePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -106,11 +117,25 @@ async function waitForJson(filePath, predicate, label) {
   throw new Error(`timed out waiting for ${label}: ${lastError?.message ?? 'predicate not met'}`);
 }
 
-async function withStartedCodexPro(args, env, fn) {
+async function waitForProcessExit(pid, label) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error?.code === 'ESRCH') return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`timed out waiting for ${label} process ${pid} to exit`);
+}
+
+async function withStartedCodexPro(args, env, fn, options = {}) {
   const child = spawn(process.execPath, ['scripts/codexpro.mjs', 'start', ...args], {
     cwd: path.resolve('.'),
     env,
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['pipe', 'pipe', 'pipe']
   });
   let output = '';
   let closed = false;
@@ -125,7 +150,10 @@ async function withStartedCodexPro(args, env, fn) {
   } catch (error) {
     throw new Error(`${error.message}\nstart output:\n${output}`);
   } finally {
-    if (!closed) child.kill('SIGTERM');
+    if (!closed) {
+      if (process.platform === 'win32' && !options.forceKill) child.stdin.end('q\n');
+      else child.kill('SIGTERM');
+    }
     await closedPromise;
   }
 }
@@ -217,7 +245,9 @@ raise SystemExit(proc.returncode or 0)
 }
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-root-'));
+const realRoot = await fs.realpath(root);
 const reuseRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-reuse-'));
+const realReuseRoot = await fs.realpath(reuseRoot);
 const policyRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-policy-'));
 const runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-runtime-'));
 const staleRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-stale-'));
@@ -270,7 +300,7 @@ if (!saved.includes('Saved workspace settings')) {
 }
 
 const shown = run(['settings', 'show', '--root', root], env);
-for (const expected of ['Tunnel', 'ngrok', 'codexpro-test.ngrok-free.app', '19087', 'Tool cards', 'on', 'Bash transcript', 'full', 'Projects', reuseRoot, '<saved>']) {
+for (const expected of ['Tunnel', 'ngrok', 'codexpro-test.ngrok-free.app', '19087', 'Tool cards', 'on', 'Bash transcript', 'full', 'Projects', realReuseRoot, '<saved>']) {
   if (!shown.includes(expected)) {
     throw new Error(`settings show missing ${expected}\n${shown}`);
   }
@@ -284,7 +314,7 @@ if (
   || profile.toolCards !== true
   || profile.bashTranscript !== 'full'
   || profile.widgetDomain !== 'https://widgets.codexpro.test'
-  || JSON.stringify(profile.allowedRoots) !== JSON.stringify([await fs.realpath(reuseRoot)])
+  || JSON.stringify(profile.allowedRoots) !== JSON.stringify([realReuseRoot])
 ) {
   throw new Error(`settings profile did not persist tool/widget options: ${JSON.stringify(profile)}`);
 }
@@ -490,7 +520,19 @@ await withStartedCodexPro([
   if (runtime.toolCards !== true || runtime.pid !== child.pid) {
     throw new Error(`runtime status did not persist toolCards: ${JSON.stringify(runtime)}`);
   }
-});
+}, { forceKill: true });
+const previousCodexProHome = process.env.CODEXPRO_HOME;
+process.env.CODEXPRO_HOME = home;
+try {
+  const { readRuntimeConnection } = await import('../dist/profileStore.js');
+  const stoppedRuntime = readRuntimeConnection(runtimeRoot);
+  if (Object.keys(stoppedRuntime).length > 0) {
+    throw new Error(`stale runtime status remained visible after launcher exit: ${JSON.stringify(stoppedRuntime)}`);
+  }
+} finally {
+  if (previousCodexProHome === undefined) delete process.env.CODEXPRO_HOME;
+  else process.env.CODEXPRO_HOME = previousCodexProHome;
+}
 try {
   await fs.access(runtimePath);
   throw new Error('runtime status was not cleared after launcher SIGTERM');
@@ -557,15 +599,17 @@ if (runInteractiveQuit([
 const cloudflareRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-cloudflare-'));
 const cloudflarePort = await getFreePort();
 const cloudflarePath = await runtimeStatusPath(cloudflareRoot, home);
-const fakeCloudflared = path.join(home, 'fake-cloudflared.mjs');
-await fs.writeFile(fakeCloudflared, [
+const fakeCloudflaredPidPath = path.join(home, 'fake-cloudflared.pid');
+const fakeCloudflared = await writeNodeExecutable(path.join(home, 'fake-cloudflared.mjs'), [
   '#!/usr/bin/env node',
+  "import fs from 'node:fs';",
   "if (process.argv.includes('--version')) { console.log('cloudflared version 2026.6.0'); process.exit(0); }",
+  'fs.writeFileSync(process.env.CODEXPRO_FAKE_CLOUDFLARED_PID, String(process.pid));',
   "console.error('https://api.trycloudflare.com/tunnel');",
   "setTimeout(() => console.error('https://real-codexpro.trycloudflare.com'), 100);",
   'setInterval(() => {}, 1000);',
   ''
-].join('\n'), { mode: 0o700 });
+]);
 await withStartedCodexPro([
   '--root',
   cloudflareRoot,
@@ -578,29 +622,37 @@ await withStartedCodexPro([
   '--token',
   'codexpro-cloudflare-token',
   '--no-copy-url'
-], withoutProxyEnv(env), async () => {
+], withoutProxyEnv({ ...env, CODEXPRO_FAKE_CLOUDFLARED_PID: fakeCloudflaredPidPath }), async () => {
   const runtime = await waitForJson(cloudflarePath, (data) => data.endpoint?.includes('trycloudflare.com'), 'cloudflare runtime status');
   if (runtime.endpoint.includes('api.trycloudflare.com') || !runtime.endpoint.startsWith('https://real-codexpro.trycloudflare.com/mcp')) {
     throw new Error(`quick tunnel saved the wrong endpoint: ${JSON.stringify(runtime)}`);
   }
 });
+if (process.platform === 'win32') {
+  const fakeCloudflaredPid = Number(await fs.readFile(fakeCloudflaredPidPath, 'utf8'));
+  try {
+    await waitForProcessExit(fakeCloudflaredPid, 'fake cloudflared shim descendant');
+  } catch (error) {
+    spawnSync('taskkill.exe', ['/pid', String(fakeCloudflaredPid), '/t', '/f'], { stdio: 'ignore' });
+    throw error;
+  }
+}
 
 const proxyCloudflareRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-cloudflare-proxy-'));
 const proxyCloudflarePort = await getFreePort();
 const proxyCloudflarePath = await runtimeStatusPath(proxyCloudflareRoot, home);
 const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-fake-bin-'));
-const fakeCurl = path.join(fakeBin, 'curl');
+const fakeCurlScript = path.join(fakeBin, process.platform === 'win32' ? 'curl.cjs' : 'curl');
 const curlArgsPath = path.join(home, 'fake-curl-args.json');
 const cloudflaredArgsPath = path.join(home, 'fake-cloudflared-proxy-args.json');
-const fakeProxyCloudflared = path.join(home, 'fake-cloudflared-proxy.mjs');
-await fs.writeFile(fakeCurl, [
+await writeNodeExecutable(fakeCurlScript, [
   '#!/usr/bin/env node',
   "const fs = require('node:fs');",
   "fs.writeFileSync(process.env.CODEXPRO_FAKE_CURL_ARGS, JSON.stringify(process.argv.slice(2)));",
   "console.log(JSON.stringify({ success: true, result: { id: 'proxy-tunnel-id', hostname: 'proxy-codexpro.trycloudflare.com', account_tag: 'account-tag', secret: 'proxy-secret-1234567890' } }));",
   ''
-].join('\n'), { mode: 0o700 });
-await fs.writeFile(fakeProxyCloudflared, [
+], path.join(fakeBin, 'curl.cmd'));
+const fakeProxyCloudflared = await writeNodeExecutable(path.join(home, 'fake-cloudflared-proxy.mjs'), [
   '#!/usr/bin/env node',
   "import fs from 'node:fs';",
   "if (process.argv.includes('--version')) { console.log('cloudflared version 2026.6.0'); process.exit(0); }",
@@ -611,7 +663,7 @@ await fs.writeFile(fakeProxyCloudflared, [
   "if (credentials.TunnelID !== 'proxy-tunnel-id' || credentials.AccountTag !== 'account-tag' || credentials.TunnelSecret !== 'proxy-secret-1234567890') process.exit(4);",
   "setInterval(() => {}, 1000);",
   ''
-].join('\n'), { mode: 0o700 });
+]);
 await withStartedCodexPro([
   '--root',
   proxyCloudflareRoot,
@@ -654,14 +706,13 @@ try {
 
 const proxyCloudflareFailRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-cloudflare-proxy-fail-'));
 const proxyCloudflareFailPort = await getFreePort();
-const fakeFailingProxyCloudflared = path.join(home, 'fake-cloudflared-proxy-fail.mjs');
-await fs.writeFile(fakeFailingProxyCloudflared, [
+const fakeFailingProxyCloudflared = await writeNodeExecutable(path.join(home, 'fake-cloudflared-proxy-fail.mjs'), [
   '#!/usr/bin/env node',
   "if (process.argv.includes('--version')) { console.log('cloudflared version 2026.6.0'); process.exit(0); }",
   "console.error('proxy tunnel startup failed');",
   'process.exit(7);',
   ''
-].join('\n'), { mode: 0o700 });
+]);
 const proxyFailure = runFail([
   'start',
   '--root',
@@ -687,15 +738,14 @@ if (!proxyFailure.includes('proxy tunnel startup failed')) {
 
 const namedCloudflareRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-cloudflare-named-'));
 const namedCloudflarePort = await getFreePort();
-const fakeNamedCloudflared = path.join(home, 'fake-cloudflared-named.mjs');
 const cloudflareRawToken = 'cf_audit_secret_1234567890TOKEN';
-await fs.writeFile(fakeNamedCloudflared, [
+const fakeNamedCloudflared = await writeNodeExecutable(path.join(home, 'fake-cloudflared-named.mjs'), [
   '#!/usr/bin/env node',
   "if (process.argv.includes('--version')) { console.log('cloudflared version 2026.6.0'); process.exit(0); }",
   "console.error('fake tunnel saw TUNNEL_TOKEN=' + process.env.TUNNEL_TOKEN);",
   'process.exit(2);',
   ''
-].join('\n'), { mode: 0o700 });
+]);
 const namedFailure = runFail([
   'start',
   '--root',
@@ -718,14 +768,13 @@ if (namedFailure.includes(cloudflareRawToken) || !namedFailure.includes('TUNNEL_
   throw new Error(`named tunnel failure leaked or failed to redact Cloudflare token\n${namedFailure}`);
 }
 
-const fakeNgrok = path.join(home, 'fake-ngrok.mjs');
-await fs.writeFile(fakeNgrok, [
+const fakeNgrok = await writeNodeExecutable(path.join(home, 'fake-ngrok.mjs'), [
   '#!/usr/bin/env node',
   "if (process.argv.includes('version')) { console.log('ngrok version 3.0.0'); process.exit(0); }",
   "console.error('NGROK_ARGS=' + process.argv.slice(2).join('|'));",
   'process.exit(2);',
   ''
-].join('\n'), { mode: 0o700 });
+]);
 run([
   'settings',
   'set',
@@ -760,14 +809,13 @@ if (!ngrokFailure.includes(`--config|${path.join(realNgrokRoot, 'new-ngrok.yml')
   throw new Error(`ngrok start did not let env config override saved profile\n${ngrokFailure}`);
 }
 
-const fakeTailscale = path.join(home, 'fake-tailscale.mjs');
-await fs.writeFile(fakeTailscale, [
+const fakeTailscale = await writeNodeExecutable(path.join(home, 'fake-tailscale.mjs'), [
   '#!/usr/bin/env node',
   "if (process.argv.includes('version')) { console.log('1.80.0'); process.exit(0); }",
   "console.error('TAILSCALE_ARGS=' + process.argv.slice(2).join('|'));",
   'process.exit(2);',
   ''
-].join('\n'), { mode: 0o700 });
+]);
 const tailscaleRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-tailscale-'));
 const tailscalePort = await getFreePort();
 const tailscaleFailure = runFail([
@@ -812,7 +860,7 @@ if (!tailscalePortFailure.includes(`funnel|--https=8443|http://127.0.0.1:${tails
 }
 
 const listed = run(['settings', 'list'], env);
-if (!listed.includes(root) || !listed.includes('codexpro-test.ngrok-free.app') || !listed.includes('codexpro-test.tailnet.ts.net')) {
+if (!listed.includes(realRoot) || !listed.includes('codexpro-test.ngrok-free.app') || !listed.includes('codexpro-test.tailnet.ts.net')) {
   throw new Error(`settings list missing saved profile\n${listed}`);
 }
 

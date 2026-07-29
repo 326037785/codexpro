@@ -42,7 +42,7 @@ function workspaceIdForRoot(realRoot: string): string {
 
 function maybeRealpath(existingPath: string): string | undefined {
   try {
-    return fs.realpathSync(existingPath);
+    return fs.realpathSync.native(existingPath);
   } catch {
     return undefined;
   }
@@ -85,7 +85,7 @@ export class WorkspaceManager {
     if (!stat.isDirectory()) {
       throw new CodexProError(`Workspace root is not a directory: ${resolved}`);
     }
-    const realRoot = fs.realpathSync(resolved);
+    const realRoot = fs.realpathSync.native(resolved);
     const allowed = this.config.allowedRoots.some((allowedRoot) => isSubpath(realRoot, allowedRoot));
     if (!allowed) {
       throw new CodexProError(

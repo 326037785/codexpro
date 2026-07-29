@@ -143,7 +143,7 @@ function toRealDir(input: string): string {
   if (!stat.isDirectory()) {
     throw new Error(`Not a directory: ${resolved}`);
   }
-  return fs.realpathSync(resolved);
+  return fs.realpathSync.native(resolved);
 }
 
 function numberFrom(value: string | undefined, fallback: number, min: number, max: number): number {

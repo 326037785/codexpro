@@ -245,6 +245,7 @@ raise SystemExit(proc.returncode or 0)
 }
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-root-'));
+const realRoot = await fs.realpath(root);
 const reuseRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-reuse-'));
 const realReuseRoot = await fs.realpath(reuseRoot);
 const policyRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-policy-'));
@@ -859,7 +860,7 @@ if (!tailscalePortFailure.includes(`funnel|--https=8443|http://127.0.0.1:${tails
 }
 
 const listed = run(['settings', 'list'], env);
-if (!listed.includes(root) || !listed.includes('codexpro-test.ngrok-free.app') || !listed.includes('codexpro-test.tailnet.ts.net')) {
+if (!listed.includes(realRoot) || !listed.includes('codexpro-test.ngrok-free.app') || !listed.includes('codexpro-test.tailnet.ts.net')) {
   throw new Error(`settings list missing saved profile\n${listed}`);
 }
 

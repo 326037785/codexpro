@@ -4,6 +4,40 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  CLOUDFLARED_VERSION,
+  cloudflaredReleaseAsset,
+  cloudflaredReleaseUrl,
+  readCloudflaredAssetResponse,
+  verifyCloudflaredAsset
+} from './cloudflared-release.mjs';
+
+const pinnedCloudflared = cloudflaredReleaseAsset('darwin', 'arm64');
+if (
+  CLOUDFLARED_VERSION !== '2026.7.2' ||
+  !cloudflaredReleaseUrl(pinnedCloudflared).includes(`/download/${CLOUDFLARED_VERSION}/`) ||
+  !/^[a-f0-9]{64}$/.test(pinnedCloudflared.sha256)
+) {
+  throw new Error('cloudflared release metadata is not pinned to an immutable version and digest');
+}
+try {
+  verifyCloudflaredAsset(pinnedCloudflared, Buffer.from('tampered cloudflared fixture'));
+  throw new Error('cloudflared checksum validation accepted a tampered download');
+} catch (error) {
+  if (!(error instanceof Error) || !error.message.includes('checksum mismatch')) throw error;
+}
+const oversizedAsset = { file: 'oversized-fixture', sha256: createHash('sha256').update('123456789').digest('hex') };
+for (const response of [
+  new Response('123456789', { headers: { 'content-length': '9' } }),
+  new Response('123456789')
+]) {
+  try {
+    await readCloudflaredAssetResponse(response, oversizedAsset, 8);
+    throw new Error('cloudflared response cap accepted an oversized download');
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('oversized cloudflared asset')) throw error;
+  }
+}
 
 function run(args, env) {
   const result = spawnSync(process.execPath, ['scripts/codexpro.mjs', ...args], {

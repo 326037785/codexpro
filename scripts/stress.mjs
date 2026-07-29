@@ -28,7 +28,7 @@ class McpStdioClient {
         CODEXPRO_TOOL_MODE: env.CODEXPRO_TOOL_MODE ?? 'full',
         CODEXPRO_BASH_MODE: env.CODEXPRO_BASH_MODE ?? 'safe',
         CODEXPRO_MAX_SEARCH_RESULTS: '2000',
-        CODEXPRO_MAX_OUTPUT_BYTES: '2000000',
+        CODEXPRO_MAX_OUTPUT_BYTES: env.CODEXPRO_MAX_OUTPUT_BYTES ?? '2000000',
         CODEXPRO_TOOL_CARDS: env.CODEXPRO_TOOL_CARDS ?? '0'
       }
     });
@@ -589,8 +589,41 @@ async function runNodeFallbackSearchLimitStress() {
       arguments: { workspace_id: opened.structuredContent.workspace_id, query: 'needle', path: 'overflow.txt', max_results: 2 }
     });
     assert(overflow.structuredContent.matches.length === 2 && overflow.structuredContent.truncated === true, `node fallback overflow search did not report truncation: ${JSON.stringify(overflow.structuredContent)}`);
+    const regex = await client.request('tools/call', {
+      name: 'search',
+      arguments: { workspace_id: opened.structuredContent.workspace_id, query: '(a+)+$', regex: true, path: 'overflow.txt' }
+    });
+    assert(String(regex.structuredContent.error).toLowerCase().includes('regex search requires ripgrep'), `node fallback accepted regex search: ${JSON.stringify(regex.structuredContent)}`);
   } finally {
     client.close();
+  }
+}
+
+async function runBashOutputTerminationStress() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-stress-bash-output-'));
+  const client = await initClient(root, {
+    CODEXPRO_BASH_MODE: 'full',
+    CODEXPRO_MAX_OUTPUT_BYTES: '4000'
+  });
+  try {
+    const opened = await client.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
+    const started = Date.now();
+    const result = await client.request('tools/call', {
+      name: 'bash',
+      arguments: {
+        workspace_id: opened.structuredContent.workspace_id,
+        command: `${JSON.stringify(process.execPath)} -e "process.on('SIGTERM',()=>{}); setInterval(()=>process.stdout.write('x'.repeat(1024)),1)"`,
+        timeout_ms: 15000
+      }
+    });
+    const retainedBytes = Buffer.byteLength(result.structuredContent.stdout ?? '', 'utf8') +
+      Buffer.byteLength(result.structuredContent.stderr ?? '', 'utf8');
+    assert(Date.now() - started < 8000, `output-limited bash waited for the independent timeout: ${Date.now() - started} ms`);
+    assert(result.structuredContent.truncated === true, `output-limited bash did not report truncation: ${JSON.stringify(result.structuredContent)}`);
+    assert(retainedBytes < 9000, `output-limited bash retained too much output: ${retainedBytes} bytes`);
+  } finally {
+    client.close();
+    await fs.rm(root, { recursive: true, force: true });
   }
 }
 
@@ -825,6 +858,7 @@ await runRedactionStress();
 await runMcpInventoryStress();
 await runMaxReadSearchStress();
 await runNodeFallbackSearchLimitStress();
+await runBashOutputTerminationStress();
 await runGuardEdgeStress();
 await runSupertoolModeStress(root);
 await runShowChangesStatsStress();

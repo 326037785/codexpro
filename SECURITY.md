@@ -45,6 +45,10 @@ Review changes against these failure modes before release:
 | Handoff mode still exposes generic writes | Handoff/pro modes do not advertise generic `write`/`edit`/`apply_patch`; bounded handoff tools write `.ai-bridge` files only. |
 | Local Codex history is treated as ChatGPT memory | Codex session access is opt-in metadata/read mode and never attaches to a live Codex app session. |
 | Browser admin mutates live runtime unexpectedly | Admin profile changes apply on restart; active runtime policy stays stable for the current session. |
+| Repeated public token guesses consume unlimited attempts | HTTP authentication rejects tokens shorter than 24 bytes and rate-limits failed attempts per client address. |
+| URL-token credentials persist in browser history or referrers | Browser onboarding removes token parameters from the visible URL after capture and sends no-store/no-referrer response headers. Prefer an Authorization header when the MCP client supports one. |
+| Timed-out bash commands leave descendant processes running | POSIX commands run in a dedicated process group and Windows termination uses `taskkill /t`; timeout and output-limit termination target the process tree. |
+| Automatic `cloudflared` install trusts a mutable download | The installer uses a pinned release URL and verifies the platform asset SHA-256 before writing or extracting it. |
 | Remote MCP tool runs Codex/OpenCode/Pi directly | Agent execution remains a user-started CLI/watch process on the local machine. |
 | Autonomous loop drives ChatGPT Web or bypasses approvals | `loop-handoff` only runs local terminal commands over `.ai-bridge` files; it does not resume browser sessions, approve prompts, or expose a remote MCP executor. |
 | Reviewer masks a failed external command | `loop-handoff` requires explicit reviewer verdict assignments and rejects reviewer `PASS` after failed executor, test, or reviewer commands unless the user opts into the supported executor/test override behavior. |
@@ -85,12 +89,16 @@ codexpro start \
 For stable public hostnames, keep the CodexPro auth token stable but private:
 
 ```bash
+mkdir -p ~/.codexpro
+openssl rand -hex 32 > ~/.codexpro/http-token
+chmod 600 ~/.codexpro/http-token
+
 codexpro start \
   --root /path/to/repo \
   --tunnel cloudflare-named \
   --hostname codexpro.example.com \
   --tunnel-name codexpro \
-  --token <long-random-token> \
+  --token-file ~/.codexpro/http-token \
   --bash safe
 ```
 
@@ -98,7 +106,9 @@ codexpro start \
 
 - Do not run public tunnels with `--no-auth`.
 - Public tunnel mode and non-loopback binds fail closed if `CODEXPRO_HTTP_TOKEN` is missing.
+- HTTP tokens shorter than 24 bytes are rejected. Use a generated random token, not a memorable password.
 - Do not commit printed connector URLs that include `codexpro_token`.
+- Production integrations must use OAuth or `Authorization: Bearer <token>`. Query-string tokens are a personal connector compatibility mode, not a shared or multi-user production authentication design.
 - Do not commit Cloudflare tunnel tokens.
 - Do not paste raw Cloudflare tunnel tokens into browser pages or screenshots. Use `--cloudflare-token-file` or the local page's Cloudflare token file field instead.
 - Use `--mode handoff` for planning workflows where ChatGPT should not edit source files. Handoff mode does not advertise generic `write`/`edit` tools.
@@ -126,10 +136,16 @@ Resolution order:
 1. explicit --cloudflared path or CLOUDFLARED_BIN
 2. cloudflared already available in PATH
 3. ~/.codexpro/bin/cloudflared or cloudflared.exe
-4. download official Cloudflare latest release unless --no-install-cloudflared is set
+4. download the pinned official Cloudflare release unless --no-install-cloudflared is set
 ```
 
-Use `--install-cloudflared` to refresh the local binary. Use `--no-install-cloudflared` to disable downloads.
+CodexPro currently pins `cloudflared` `2026.7.2` and verifies the selected asset
+against its published SHA-256 before writing or extracting it. Updating the
+version requires updating every supported platform digest in
+`scripts/cloudflared-release.mjs` and passing `npm run test:settings`.
+
+Use `--install-cloudflared` to reinstall the verified pinned binary. Use
+`--no-install-cloudflared` to disable downloads.
 
 ## Built-In Guards
 

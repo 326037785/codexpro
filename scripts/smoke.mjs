@@ -81,6 +81,7 @@ const alternateWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-smo
 await fs.writeFile(path.join(alternateWorkspace, 'selected.txt'), 'alternate workspace\n', 'utf8');
 await fs.writeFile(path.join(tmp, 'demo.txt'), 'alpha\nread\nread\nomega\n', 'utf8');
 await fs.writeFile(path.join(tmp, 'other.txt'), 'keep\n', 'utf8');
+await fs.writeFile(path.join(tmp, 'patch-race.txt'), 'patch race initial\n', 'utf8');
 await fs.writeFile(path.join(tmp, 'config.txt'), 'OPENAI_API_KEY=sk-realSecretValue123\n', 'utf8');
 await fs.writeFile(path.join(tmp, 'AGENTS.md'), '# Smoke Agents\n\n- Preserve demo.txt.\n', 'utf8');
 const codexHistoryDir = path.join(tmp, 'codex-history');
@@ -175,6 +176,11 @@ await fs.writeFile(path.join(tmp, 'test', 'auth.test.ts'), "import { authenticat
 await fs.writeFile(path.join(tmp, 'é.ts'), 'export const accent = 1;\n', 'utf8');
 await fs.writeFile(path.join(tmp, '旧名.ts'), 'export const renamed = true;\n', 'utf8');
 await fs.writeFile(
+  path.join(tmp, 'search-overflow.txt'),
+  Array.from({ length: 800 }, (_, index) => `overflow-marker-${String(index).padStart(4, '0')} ${'x'.repeat(80)}`).join('\n') + '\n',
+  'utf8'
+);
+await fs.writeFile(
   path.join(tmp, 'pixel.png'),
   Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
 );
@@ -200,7 +206,7 @@ try {
   symlinkEscapePath = 'secret-link-dir/secret.txt';
   await fs.symlink(outside, path.join(tmp, 'secret-link-dir'), 'junction');
 }
-for (const args of [['init'], ['config', 'core.quotePath', 'true'], ['add', 'demo.txt', 'other.txt', 'AGENTS.md', 'package.json', 'src/auth.ts', 'test/auth.test.ts', 'é.ts', '旧名.ts']]) {
+for (const args of [['init'], ['config', 'core.quotePath', 'true'], ['add', 'demo.txt', 'other.txt', 'patch-race.txt', 'AGENTS.md', 'package.json', 'src/auth.ts', 'test/auth.test.ts', 'search-overflow.txt', 'é.ts', '旧名.ts']]) {
   const result = spawnSync('git', args, { cwd: tmp, encoding: 'utf8' });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
@@ -316,6 +322,44 @@ if (spawnSync(process.platform === 'win32' ? 'where' : 'sh', process.platform ==
   }
 }
 await cardClient.close();
+if (spawnSync(process.platform === 'win32' ? 'where' : 'sh', process.platform === 'win32' ? ['rg'] : ['-lc', 'command -v rg >/dev/null 2>&1']).status === 0) {
+  const limitedSearchClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'off', '--tool-mode', 'standard'], {
+    cwd: path.resolve('.'),
+    env: {
+      ...process.env,
+      CODEXPRO_ROOT: tmp,
+      CODEXPRO_ALLOWED_ROOTS: tmp,
+      CODEXPRO_MAX_OUTPUT_BYTES: '4000'
+    }
+  });
+  try {
+    await limitedSearchClient.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'codexpro-search-limit-smoke', version: '0.1.0' }
+    });
+    limitedSearchClient.notify('notifications/initialized');
+    const limitedOpened = await limitedSearchClient.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
+    const limitedSearch = await limitedSearchClient.request('tools/call', {
+      name: 'search',
+      arguments: {
+        workspace_id: limitedOpened.structuredContent.workspace_id,
+        query: 'overflow-marker',
+        path: 'search-overflow.txt',
+        max_results: 500
+      }
+    });
+    if (limitedSearch.isError || limitedSearch.structuredContent.truncated !== true) {
+      throw new Error(`ripgrep output limit did not return a bounded truncated result: ${JSON.stringify(limitedSearch.structuredContent)}`);
+    }
+    const afterLimitedSearch = await limitedSearchClient.request('tools/call', { name: 'server_config', arguments: {} });
+    if (afterLimitedSearch.isError || afterLimitedSearch.structuredContent.bashMode !== 'off') {
+      throw new Error('ripgrep output limit left the MCP server unavailable');
+    }
+  } finally {
+    await limitedSearchClient.close();
+  }
+}
 const resources = await client.request('resources/list', {});
 const toolCard = resources.resources.find((resource) => resource.uri === toolCardUri);
 if (!toolCard) throw new Error(`missing tool-card resource: ${toolCardUri}`);
@@ -528,7 +572,7 @@ await client.request('tools/call', {
   }
 });
 if (await fs.readFile(path.join(tmp, 'concurrent.txt'), 'utf8') !== 'version three\n') {
-  throw new Error('conflict-safe atomic edit did not update the file');
+  throw new Error('conflict-safe edit did not update the file');
 }
 for (let attempt = 0; attempt < 12; attempt += 1) {
   const original = `race original ${attempt}\n`;
@@ -564,6 +608,47 @@ for (let attempt = 0; attempt < 12; attempt += 1) {
   const raceFailureText = raceFailures[0].content?.find?.((part) => part.type === 'text')?.text ?? '';
   if (!/File changed since it was read/.test(raceFailureText)) {
     throw new Error(`concurrent SHA edit failed for the wrong reason: ${raceFailureText}`);
+  }
+}
+for (let attempt = 0; attempt < 12; attempt += 1) {
+  const original = `patch race original ${attempt}\n`;
+  const edited = `patch race edit winner ${attempt}\n`;
+  const patched = `patch race patch winner ${attempt}\n`;
+  await fs.writeFile(path.join(tmp, 'patch-race.txt'), original, 'utf8');
+  const raceRead = await client.request('tools/call', {
+    name: 'read',
+    arguments: { workspace_id: ws, path: 'patch-race.txt' }
+  });
+  const patch = [
+    'diff --git a/patch-race.txt b/patch-race.txt',
+    '--- a/patch-race.txt',
+    '+++ b/patch-race.txt',
+    '@@ -1 +1 @@',
+    `-${original.trimEnd()}`,
+    `+${patched.trimEnd()}`
+  ].join('\n') + '\n';
+  const raceResults = await Promise.all([
+    client.request('tools/call', {
+      name: 'edit',
+      arguments: {
+        workspace_id: ws,
+        path: 'patch-race.txt',
+        old_text: original.trimEnd(),
+        new_text: edited.trimEnd(),
+        expected_sha256: raceRead.structuredContent.sha256
+      }
+    }),
+    client.request('tools/call', {
+      name: 'apply_patch',
+      arguments: { workspace_id: ws, patch }
+    })
+  ]);
+  if (raceResults.filter((result) => !result.isError).length !== 1 || raceResults.filter((result) => result.isError).length !== 1) {
+    throw new Error(`apply_patch did not share the per-file write lock: ${JSON.stringify(raceResults)}`);
+  }
+  const finalText = await fs.readFile(path.join(tmp, 'patch-race.txt'), 'utf8');
+  if (finalText !== edited && finalText !== patched) {
+    throw new Error(`apply_patch race produced a lost or partial update: ${JSON.stringify(finalText)}`);
   }
 }
 if (process.platform !== 'win32') {
@@ -604,8 +689,11 @@ if (process.platform !== 'win32') {
 }
 if (process.platform !== 'win32') {
   const permissionPath = path.join(tmp, 'permissions.txt');
+  const hardLinkPath = path.join(tmp, 'permissions-hard-link.txt');
   await fs.writeFile(permissionPath, 'permission before\n', 'utf8');
   await fs.chmod(permissionPath, 0o666);
+  await fs.link(permissionPath, hardLinkPath);
+  const initialStat = await fs.stat(permissionPath);
   const permissionRead = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: 'permissions.txt' } });
   await client.request('tools/call', {
     name: 'edit',
@@ -617,9 +705,16 @@ if (process.platform !== 'win32') {
       expected_sha256: permissionRead.structuredContent.sha256
     }
   });
-  const finalMode = (await fs.stat(permissionPath)).mode & 0o7777;
+  const finalStat = await fs.stat(permissionPath);
+  const finalMode = finalStat.mode & 0o7777;
   if (finalMode !== 0o666) {
-    throw new Error(`atomic edit changed existing permissions from 0666 to ${finalMode.toString(8)}`);
+    throw new Error(`edit changed existing permissions from 0666 to ${finalMode.toString(8)}`);
+  }
+  if (finalStat.ino !== initialStat.ino) {
+    throw new Error(`edit replaced the existing inode ${initialStat.ino} with ${finalStat.ino}`);
+  }
+  if (await fs.readFile(hardLinkPath, 'utf8') !== 'permission after\n') {
+    throw new Error('edit broke existing hard-link identity');
   }
 }
 const symlinkRead = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: symlinkEscapePath } });
@@ -1012,6 +1107,57 @@ await expectToolError('handoff_to_agent', {
   append: true
 }, /File is too large/);
 client.close();
+if (process.platform !== 'win32') {
+  const processTreeClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'full', '--tool-mode', 'full'], {
+    cwd: path.resolve('.'),
+    env: { ...process.env, CODEXPRO_ROOT: tmp, CODEXPRO_ALLOWED_ROOTS: tmp, CODEXPRO_BASH_MODE: 'full' }
+  });
+  await processTreeClient.request('initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'codexpro-process-tree-smoke', version: '0.1.0' }
+  });
+  processTreeClient.notify('notifications/initialized');
+  const processTreeOpened = await processTreeClient.request('tools/call', {
+    name: 'open_current_workspace',
+    arguments: { include_tree: false }
+  });
+  const descendantPidPath = path.join(tmp, 'bash-descendant.pid');
+  const descendantScript = [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+    `fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(child.pid));`,
+    "setInterval(() => {}, 1000);"
+  ].join('');
+  const timedOutTree = await processTreeClient.request('tools/call', {
+    name: 'bash',
+    arguments: {
+      workspace_id: processTreeOpened.structuredContent.workspace_id,
+      command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(descendantScript)}`,
+      timeout_ms: 1000
+    }
+  });
+  if (!timedOutTree.structuredContent.stderr?.includes('Command timed out')) {
+    throw new Error(`bash process-tree smoke did not time out: ${JSON.stringify(timedOutTree.structuredContent)}`);
+  }
+  const descendantPid = Number(await fs.readFile(descendantPidPath, 'utf8'));
+  let descendantAlive = true;
+  for (let attempt = 0; attempt < 20 && descendantAlive; attempt += 1) {
+    try {
+      process.kill(descendantPid, 0);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } catch (error) {
+      if (error?.code !== 'ESRCH') throw error;
+      descendantAlive = false;
+    }
+  }
+  if (descendantAlive) {
+    process.kill(descendantPid, 'SIGKILL');
+    throw new Error(`timed-out bash descendant ${descendantPid} survived process-group termination`);
+  }
+  processTreeClient.close();
+}
 async function assertToolMode(mode, expected, hidden, extraEnv = {}) {
   const args = ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'safe'];
   if (mode) args.push('--tool-mode', mode);

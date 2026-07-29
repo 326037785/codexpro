@@ -84,7 +84,10 @@ Install or bootstrap `cloudflared`:
 codexpro install-cloudflared
 ```
 
-That installs the official Cloudflare binary into `~/.codexpro/bin` on supported macOS, Windows, and Linux machines. You can also install `cloudflared` manually and keep it on PATH.
+That installs the pinned official Cloudflare binary into `~/.codexpro/bin` on
+supported macOS, Windows, and Linux machines and verifies its SHA-256 before
+writing or extracting it. You can also install `cloudflared` manually and keep
+it on PATH.
 
 Authenticate:
 
@@ -102,11 +105,15 @@ Create a named tunnel:
 Start CodexPro with that stable hostname:
 
 ```bash
+mkdir -p ~/.codexpro
+openssl rand -hex 32 > ~/.codexpro/http-token
+chmod 600 ~/.codexpro/http-token
+
 codexpro stable \
   --root /absolute/path/to/your/repo \
   --hostname local.example.space \
   --tunnel-name codexpro-local \
-  --token replace-with-a-long-stable-token \
+  --token-file ~/.codexpro/http-token \
   --bash safe
 ```
 
@@ -118,6 +125,13 @@ Connection: Server URL
 Server URL: https://local.example.space/mcp?codexpro_token=replace-with-a-long-stable-token
 Authentication: None / No Authentication
 ```
+
+The query-string token is a personal-use compatibility fallback for connector forms that
+cannot set request headers. CodexPro removes it from the browser address after
+the local onboarding page loads and sends no-store/no-referrer headers. Prefer
+an `Authorization: Bearer` header when your MCP client supports one. Shared or
+multi-user production deployments require OAuth or header authentication. Never
+share or commit the compatibility URL.
 
 After that, restart only the terminal command. You do not need to edit the ChatGPT connector unless you change the hostname or token.
 
@@ -139,7 +153,7 @@ codexpro stable \
   --root /absolute/path/to/your/repo \
   --hostname local.example.space \
   --cloudflare-token-file ~/.codexpro/cloudflare-tunnel-token \
-  --token replace-with-a-long-stable-token \
+  --token-file ~/.codexpro/http-token \
   --bash safe
 ```
 
@@ -173,7 +187,7 @@ Daily startup:
 codexpro ngrok \
   --root /absolute/path/to/your/repo \
   --hostname your-domain.ngrok-free.dev \
-  --token replace-with-a-long-stable-token \
+  --token-file ~/.codexpro/http-token \
   --bash safe
 ```
 

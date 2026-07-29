@@ -8,6 +8,13 @@ import path from 'node:path';
 import process from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  CLOUDFLARED_VERSION,
+  cloudflaredReleaseAsset,
+  cloudflaredReleaseUrl,
+  readCloudflaredAssetResponse,
+  verifyCloudflaredAsset
+} from './cloudflared-release.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const UNTRACKED_FILE_HASH_BYTES = 64 * 1024;
@@ -101,6 +108,7 @@ Options:
                              File containing a Cloudflare Tunnel token.
   --cloudflare-config <path> cloudflared YAML config for a named tunnel.
   --token <token>           Bearer token for HTTP MCP. Auto-generated for tunnels.
+  --token-file <path>       Read the HTTP MCP bearer token from a mode-0600 file.
   --cloudflared <path>      cloudflared executable. Default: PATH, then ~/.codexpro/bin.
   --ngrok <path>            ngrok executable. Default: PATH.
   --ngrok-config <path>     Optional ngrok config file path.
@@ -595,6 +603,11 @@ function resolveCodexCommand() {
   return commandPaths('codex').find(isWindowsCommandCandidate) || 'codex';
 }
 
+function resolveAgentCommand(command) {
+  if (process.platform !== 'win32' || isPathLike(command)) return command;
+  return commandPaths(command).find(isWindowsCommandCandidate) || command;
+}
+
 function executableFileExists(filePath) {
   try {
     return fs.statSync(filePath).isFile();
@@ -840,30 +853,6 @@ function localCloudflaredPath() {
   return path.join(codexProHome(), 'bin', cloudflaredBinName());
 }
 
-function cloudflaredReleaseAsset() {
-  const platform = process.platform;
-  const arch = process.arch;
-
-  if (platform === 'darwin') {
-    if (arch === 'arm64') return { file: 'cloudflared-darwin-arm64.tgz', archive: true };
-    if (arch === 'x64') return { file: 'cloudflared-darwin-amd64.tgz', archive: true };
-  }
-
-  if (platform === 'linux') {
-    if (arch === 'arm64') return { file: 'cloudflared-linux-arm64', archive: false };
-    if (arch === 'arm') return { file: 'cloudflared-linux-arm', archive: false };
-    if (arch === 'x64') return { file: 'cloudflared-linux-amd64', archive: false };
-    if (arch === 'ia32') return { file: 'cloudflared-linux-386', archive: false };
-  }
-
-  if (platform === 'win32') {
-    if (arch === 'x64') return { file: 'cloudflared-windows-amd64.exe', archive: false };
-    if (arch === 'ia32') return { file: 'cloudflared-windows-386.exe', archive: false };
-  }
-
-  throw new Error(`Automatic cloudflared install is not supported on ${platform}/${arch}. Install cloudflared manually or pass --cloudflared <path>.`);
-}
-
 function findFileByName(root, fileName) {
   const entries = fs.readdirSync(root, { withFileTypes: true });
   for (const entry of entries) {
@@ -877,14 +866,15 @@ function findFileByName(root, fileName) {
   return '';
 }
 
-async function downloadFile(url, destination) {
+async function downloadFile(url, destination, asset) {
   const response = await fetch(url, {
     headers: { 'user-agent': 'codexpro-launcher' }
   });
   if (!response.ok) {
     throw new Error(`Failed to download ${url}: ${response.status} ${response.statusText}`);
   }
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = await readCloudflaredAssetResponse(response, asset);
+  verifyCloudflaredAsset(asset, buffer);
   fs.writeFileSync(destination, buffer, { mode: 0o755 });
 }
 
@@ -904,18 +894,18 @@ async function installCloudflaredLocal() {
   const installPath = localCloudflaredPath();
   const binDir = path.dirname(installPath);
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codexpro-cloudflared-'));
-  const url = `https://github.com/cloudflare/cloudflared/releases/latest/download/${asset.file}`;
+  const url = cloudflaredReleaseUrl(asset);
 
   fs.mkdirSync(binDir, { recursive: true, mode: 0o700 });
   console.error(`[codexpro] Installing cloudflared locally: ${installPath}`);
-  console.error(`[codexpro] Downloading official Cloudflare release: ${asset.file}`);
+  console.error(`[codexpro] Downloading verified Cloudflare release ${CLOUDFLARED_VERSION}: ${asset.file}`);
 
   try {
     if (asset.archive) {
       const archivePath = path.join(tmpRoot, asset.file);
       const extractDir = path.join(tmpRoot, 'extract');
       fs.mkdirSync(extractDir, { recursive: true });
-      await downloadFile(url, archivePath);
+      await downloadFile(url, archivePath, asset);
       const tar = spawnSync('tar', ['-xzf', archivePath, '-C', extractDir], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -929,7 +919,7 @@ async function installCloudflaredLocal() {
       fs.copyFileSync(extracted, installPath);
     } else {
       const tmpBinary = path.join(tmpRoot, cloudflaredBinName());
-      await downloadFile(url, tmpBinary);
+      await downloadFile(url, tmpBinary, asset);
       fs.copyFileSync(tmpBinary, installPath);
     }
 
@@ -1297,7 +1287,14 @@ function tailscaleFunnelHttpsPort(publicBase) {
 
 function readTokenFile(filePath) {
   const resolved = path.resolve(expandHome(filePath));
-  return fs.readFileSync(resolved, 'utf8').trim();
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile()) throw new Error(`Token path is not a regular file: ${resolved}`);
+  if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
+    throw new Error(`Token file permissions are too broad: ${resolved}. Run chmod 600 ${resolved}.`);
+  }
+  const token = fs.readFileSync(resolved, 'utf8').trim();
+  if (!token) throw new Error(`Token file is empty: ${resolved}`);
+  return token;
 }
 
 function normalizeMode(args) {
@@ -1372,6 +1369,19 @@ function resolveWorkspaceFile(root, relativePath) {
   const absPath = path.resolve(root, relativePath);
   if (!isSubpath(absPath, root)) {
     throw new Error(`Path escapes workspace root: ${relativePath}`);
+  }
+  const relative = path.relative(root, absPath);
+  let current = root;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        throw new Error(`Symlink paths are not allowed for local handoff files: ${relativePath}`);
+      }
+    } catch (error) {
+      if (error && typeof error === 'object' && error.code === 'ENOENT') break;
+      throw error;
+    }
   }
   return absPath;
 }
@@ -1506,16 +1516,22 @@ function buildExecutorCommand(args, root, planPath, planText) {
     const parts = splitCommandTemplate(template).map((part) => applyCommandTemplate(part, replacements));
     const displayParts = splitCommandTemplate(template).map((part) => applyCommandTemplate(part, { ...replacements, plan_text: '<plan_text>' }));
     if (!parts.length) throw new Error('Custom --command is empty.');
-    return { agent, model, command: parts[0], args: parts.slice(1), displayArgs: displayParts.slice(1), custom: true };
+    const command = resolveAgentCommand(parts[0]);
+    if (isWindowsBatchFile(command) && /\{\{\s*plan_text\s*\}\}/.test(template)) {
+      throw new Error('Windows .cmd/.bat adapters must use {{plan_file}} instead of {{plan_text}}.');
+    }
+    return { agent, model, command, args: parts.slice(1), displayArgs: displayParts.slice(1), custom: true };
   }
 
+  const relativePlanPath = path.relative(root, planPath) || planPath;
+  const planPrompt = `Read the handoff plan at ${relativePlanPath} and execute it in this workspace.`;
   if (agent === 'opencode') {
     return {
       agent,
       model,
-      command: 'opencode',
-      args: ['run', ...(model ? ['--model', model] : []), planText],
-      displayArgs: ['run', ...(model ? ['--model', model] : []), '<plan_text>'],
+      command: resolveAgentCommand('opencode'),
+      args: ['run', ...(model ? ['--model', model] : []), planPrompt],
+      displayArgs: ['run', ...(model ? ['--model', model] : []), `<read ${relativePlanPath}>`],
       custom: false
     };
   }
@@ -1523,15 +1539,14 @@ function buildExecutorCommand(args, root, planPath, planText) {
     return {
       agent,
       model,
-      command: 'pi',
-      args: [...(model ? ['--model', model] : []), '-p', planText],
-      displayArgs: [...(model ? ['--model', model] : []), '-p', '<plan_text>'],
+      command: resolveAgentCommand('pi'),
+      args: [...(model ? ['--model', model] : []), '-p', planPrompt],
+      displayArgs: [...(model ? ['--model', model] : []), '-p', `<read ${relativePlanPath}>`],
       custom: false
     };
   }
   if (agent === 'codex') {
     const codexLastMessagePath = path.join(path.dirname(planPath), 'codex-last-message.md');
-    const relativePlanPath = path.relative(root, planPath) || planPath;
     const codexPrompt = [
       `Read the handoff plan at ${relativePlanPath} and execute it in this workspace.`,
       'Keep changes scoped to that plan.',
@@ -1580,17 +1595,17 @@ function executorCommandPreview(commandInfo) {
 }
 
 function quoteWindowsCmdArg(value) {
-  const text = String(value).replace(/\r?\n/g, ' ');
+  const text = String(value).replace(/\r?\n/g, ' ').replace(/%/g, '%%');
   if (!text) return '""';
   return `"${text.replace(/"/g, '""')}"`;
 }
 
 function processInvocation(command, args) {
   if (!isWindowsBatchFile(command)) return { command, args };
-  const commandLine = ['call', quoteWindowsCmdArg(command), ...args.map(quoteWindowsCmdArg)].join(' ');
+  const commandLine = `"${[quoteWindowsCmdArg(command), ...args.map(quoteWindowsCmdArg)].join(' ')}"`;
   return {
     command: process.env.ComSpec || 'cmd.exe',
-    args: ['/d', '/s', '/c', commandLine],
+    args: ['/d', '/q', '/v:off', '/s', '/c', commandLine],
     windowsVerbatimArguments: true
   };
 }
@@ -1705,9 +1720,9 @@ function codeBlock(label, value) {
 function writeExecutionOutputs(root, contextDir, commandInfo, result, diffText, gitStatusText) {
   const bridgeDir = resolveWorkspaceFile(root, contextDir);
   fs.mkdirSync(bridgeDir, { recursive: true, mode: 0o700 });
-  const statusPath = path.join(bridgeDir, 'agent-status.md');
-  const diffPath = path.join(bridgeDir, 'implementation-diff.patch');
-  const logPath = path.join(bridgeDir, 'execution-log.jsonl');
+  const statusPath = resolveWorkspaceFile(root, path.join(contextDir, 'agent-status.md'));
+  const diffPath = resolveWorkspaceFile(root, path.join(contextDir, 'implementation-diff.patch'));
+  const logPath = resolveWorkspaceFile(root, path.join(contextDir, 'execution-log.jsonl'));
   const commandText = executorCommandPreview(commandInfo);
   const status = [
     '# Agent Execution Status',
@@ -1775,7 +1790,7 @@ function loadHandoffExecution(args) {
   const root = realDir(args.root ?? process.env.CODEXPRO_ROOT ?? process.cwd());
   const contextDir = contextDirFromArgs(args);
   const bridgeDir = resolveWorkspaceFile(root, contextDir);
-  const planPath = path.join(bridgeDir, 'current-plan.md');
+  const planPath = resolveWorkspaceFile(root, path.join(contextDir, 'current-plan.md'));
   const maxReadBytes = handoffMaxReadBytes();
   const maxOutputBytes = numberOption(args.maxOutputBytes ?? process.env.CODEXPRO_MAX_OUTPUT_BYTES, 120_000, 4_000, 2_000_000);
   const timeoutMs = numberOption(args.timeoutMs ?? args.timeout, 600_000, 1_000, 24 * 60 * 60_000);
@@ -3895,7 +3910,12 @@ async function main() {
   validateChoice('write', write, ['off', 'handoff', 'workspace']);
   validateChoice('tool-mode', toolMode, ['minimal', 'standard', 'full']);
 
-  let token = args.noAuth ? '' : optionValue(args, profile, 'token', ['CODEXPRO_HTTP_TOKEN', 'CODEBASE_BRIDGE_HTTP_TOKEN'], '');
+  if (args.token && args.tokenFile) throw new Error('Use either --token or --token-file, not both.');
+  let token = args.noAuth
+    ? ''
+    : args.tokenFile
+      ? readTokenFile(args.tokenFile)
+      : optionValue(args, profile, 'token', ['CODEXPRO_HTTP_TOKEN', 'CODEBASE_BRIDGE_HTTP_TOKEN'], '');
   if (!token && !args.noAuth) token = stableToken();
 
   const serverEnv = {

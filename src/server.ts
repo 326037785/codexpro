@@ -6,7 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { CodexProConfig } from "./config.js";
 import { WorkspaceManager, PathGuard, CodexProError, type Workspace } from "./guard.js";
-import { repoTree, readTextFile, writeTextFile, editTextFile, ensureAiBridge } from "./fsOps.js";
+import { repoTree, readTextFile, writeTextFile, editTextFile, ensureAiBridge, withFileWriteLocks } from "./fsOps.js";
 import { viewWorkspaceImage } from "./imageOps.js";
 import { searchWorkspace } from "./searchOps.js";
 import { runBash } from "./bashOps.js";
@@ -529,8 +529,6 @@ function diffStats(diff: string): { additions: number; deletions: number; change
   return { additions, deletions, changed: Boolean(diff.trim()) };
 }
 
-const reviewCheckpoints = new Map<string, string>();
-
 function reviewCheckpointKey(workspace: Workspace, options: { path?: string; staged: boolean }): string {
   return `${workspace.id}\0${options.path ?? ""}\0${options.staged ? "staged" : "unstaged"}`;
 }
@@ -636,12 +634,12 @@ function patchTouchedPaths(patch: string): string[] {
   return [...paths];
 }
 
-function applyWorkspacePatch(
+async function applyWorkspacePatch(
   config: CodexProConfig,
   guard: PathGuard,
   workspace: Workspace,
   patch: string
-): { paths: string[]; stdout: string; stderr: string; diff: string; additions: number; deletions: number; changed: boolean } {
+): Promise<{ paths: string[]; stdout: string; stderr: string; diff: string; additions: number; deletions: number; changed: boolean }> {
   if (!patch.trim()) throw new CodexProError("patch is required.");
   if (Buffer.byteLength(patch, "utf8") > config.maxWriteBytes) {
     throw new CodexProError(`Patch is too large. Limit: ${config.maxWriteBytes} bytes.`);
@@ -655,44 +653,52 @@ function applyWorkspacePatch(
 
   const paths = patchTouchedPaths(patch);
   if (!paths.length) throw new CodexProError("Patch must include at least one file path.");
+  const absPaths: string[] = [];
   for (const touchedPath of paths) {
-    guard.resolve(workspace, touchedPath, { forWrite: true });
+    absPaths.push(guard.resolve(workspace, touchedPath, { forWrite: true }).absPath);
     assertWriteToolAllowed(config, touchedPath);
   }
 
-  const check = spawnSync("git", ["apply", "--check", "--whitespace=nowarn"], {
-    cwd: workspace.root,
-    input: patch,
-    encoding: "utf8",
-    maxBuffer: config.maxOutputBytes,
-    env: { ...process.env, NO_COLOR: "1" }
-  });
-  if (check.error || check.status !== 0) {
-    throw new CodexProError(redactSensitiveText(check.stderr?.trim() || check.stdout?.trim() || check.error?.message || "git apply --check failed"));
-  }
+  return withFileWriteLocks(absPaths, () => {
+    for (const touchedPath of paths) {
+      guard.resolve(workspace, touchedPath, { forWrite: true });
+      assertWriteToolAllowed(config, touchedPath);
+    }
 
-  const applied = spawnSync("git", ["apply", "--whitespace=nowarn"], {
-    cwd: workspace.root,
-    input: patch,
-    encoding: "utf8",
-    maxBuffer: config.maxOutputBytes,
-    env: { ...process.env, NO_COLOR: "1" }
-  });
-  if (applied.error || applied.status !== 0) {
-    throw new CodexProError(redactSensitiveText(applied.stderr?.trim() || applied.stdout?.trim() || applied.error?.message || "git apply failed"));
-  }
+    const check = spawnSync("git", ["apply", "--check", "--whitespace=nowarn"], {
+      cwd: workspace.root,
+      input: patch,
+      encoding: "utf8",
+      maxBuffer: config.maxOutputBytes,
+      env: { ...process.env, NO_COLOR: "1" }
+    });
+    if (check.error || check.status !== 0) {
+      throw new CodexProError(redactSensitiveText(check.stderr?.trim() || check.stdout?.trim() || check.error?.message || "git apply --check failed"));
+    }
 
-  const diff = redactSensitiveText(patch.trimEnd());
-  const stats = diffStats(diff);
-  return {
-    paths,
-    stdout: redactSensitiveText(applied.stdout?.trim() || ""),
-    stderr: redactSensitiveText(applied.stderr?.trim() || ""),
-    diff,
-    additions: stats.additions,
-    deletions: stats.deletions,
-    changed: true
-  };
+    const applied = spawnSync("git", ["apply", "--whitespace=nowarn"], {
+      cwd: workspace.root,
+      input: patch,
+      encoding: "utf8",
+      maxBuffer: config.maxOutputBytes,
+      env: { ...process.env, NO_COLOR: "1" }
+    });
+    if (applied.error || applied.status !== 0) {
+      throw new CodexProError(redactSensitiveText(applied.stderr?.trim() || applied.stdout?.trim() || applied.error?.message || "git apply failed"));
+    }
+
+    const diff = redactSensitiveText(patch.trimEnd());
+    const stats = diffStats(diff);
+    return {
+      paths,
+      stdout: redactSensitiveText(applied.stdout?.trim() || ""),
+      stderr: redactSensitiveText(applied.stderr?.trim() || ""),
+      diff,
+      additions: stats.additions,
+      deletions: stats.deletions,
+      changed: true
+    };
+  });
 }
 
 function looksLikeGitError(output: string): boolean {
@@ -918,6 +924,7 @@ const HANDOFF_WRITE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: false, d
 
 export function createCodexProServer(config: CodexProConfig): McpServer {
   const workspaces = new WorkspaceManager(config);
+  const reviewCheckpoints = new Map<string, string>();
   const guard = new PathGuard(config);
   const server = new McpServer({ name: "CodexPro", version: "0.29.0" }, { instructions: serverInstructions(config) });
   registeredToolNamesByServer.set(server as object, []);
@@ -1810,7 +1817,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     "write",
     {
       title: "Write File",
-      description: "Create or overwrite a meaningful text file inside the workspace using an atomic replacement. Returns a unified diff; pass the SHA from read when overwriting shared files.",
+      description: "Create or overwrite a meaningful text file inside the workspace. New files use an atomic rename; existing files retain their inode and metadata. Returns a unified diff; pass the SHA from read when overwriting shared files.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().describe("File path relative to workspace root."),
@@ -1857,7 +1864,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     "edit",
     {
       title: "Edit File",
-      description: "Apply a targeted exact text replacement with atomic replacement. Returns a unified diff; pass the SHA from read to reject stale multi-session edits.",
+      description: "Apply a targeted exact text replacement while retaining the existing file inode and metadata. Returns a unified diff; pass the SHA from read to reject stale multi-session edits.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().describe("File path relative to workspace root."),
@@ -1920,7 +1927,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
-      const result = applyWorkspacePatch(config, guard, workspace, String(args.patch ?? ""));
+      const result = await applyWorkspacePatch(config, guard, workspace, String(args.patch ?? ""));
       if (result.changed) invalidateWorkspaceAnalysis(workspace.id);
       const text = [
         "# Apply Patch",

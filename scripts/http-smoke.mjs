@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -103,6 +103,27 @@ async function expectHttpTokenRequired(name, overrides = {}, options = {}) {
   }
 }
 
+async function expectWeakHttpTokenRejected() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-http-weak-token-'));
+  const port = await getFreePort();
+  const child = spawn('node', ['dist/http.js'], {
+    cwd: path.resolve('.'),
+    env: {
+      ...process.env,
+      CODEXPRO_ROOT: root,
+      CODEXPRO_ALLOWED_ROOTS: root,
+      CODEXPRO_HOST: '127.0.0.1',
+      CODEXPRO_PORT: String(port),
+      CODEXPRO_HTTP_TOKEN: 'short-token'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const result = await waitForExit(child);
+  if (result.code === 0 || !result.stderr.includes('CODEXPRO_HTTP_TOKEN must be at least 24 bytes')) {
+    throw new Error(`expected weak HTTP token startup to fail closed, got:\n${result.stderr}`);
+  }
+}
+
 async function listTools(url, token) {
   const client = new Client({ name: 'codexpro-http-smoke', version: '0.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(url), {
@@ -137,6 +158,7 @@ await expectHttpTokenRequired('loopback-default');
 await expectHttpTokenRequired('non-loopback', { CODEXPRO_HOST: '0.0.0.0' });
 await expectHttpTokenRequired('non-loopback-allow-no-token', { CODEXPRO_HOST: '0.0.0.0', CODEXPRO_ALLOW_NO_HTTP_TOKEN: '1' }, { keepAllowNoToken: true });
 await expectHttpTokenRequired('tunnel-mode', { CODEXPRO_TUNNEL_MODE: '1' });
+await expectWeakHttpTokenRejected();
 
 async function withClient(url, fn) {
   const client = new Client({ name: 'codexpro-http-smoke', version: '0.0.0' });
@@ -196,6 +218,16 @@ await fs.writeFile(path.join(root, '.codex', 'skills', 'http-smoke-skill', 'SKIL
   '# HTTP Smoke Skill',
   ''
 ].join('\n'), 'utf8');
+await fs.writeFile(path.join(root, 'session-checkpoint.txt'), 'checkpoint initial\n', 'utf8');
+for (const args of [
+  ['init'],
+  ['add', '.codex/skills/http-smoke-skill/SKILL.md', 'session-checkpoint.txt'],
+  ['-c', 'user.email=smoke@example.com', '-c', 'user.name=Smoke Test', 'commit', '-m', 'http smoke fixture']
+]) {
+  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+}
+await fs.writeFile(path.join(root, 'session-checkpoint.txt'), 'checkpoint changed\n', 'utf8');
 const port = await getFreePort();
 const genericPort = await getFreePort();
 const token = 'codexpro-http-smoke-token';
@@ -268,6 +300,21 @@ try {
     throw new Error(`expected URL-token healthz to return 200, got ${queryAuthorized.status}`);
   }
 
+  let throttled;
+  for (let attempt = 0; attempt < 15; attempt += 1) {
+    throttled = await fetch(`${baseUrl}/healthz?codexpro_token=wrong-token-${attempt}`);
+    if (throttled.status === 429) break;
+  }
+  if (throttled?.status !== 429 || !throttled.headers.get('retry-after')) {
+    throw new Error(`expected repeated failed authentication to return 429 with Retry-After, got ${throttled?.status}`);
+  }
+  const validAfterThrottle = await fetch(`${baseUrl}/healthz`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (validAfterThrottle.status !== 200) {
+    throw new Error(`authentication throttling blocked a valid token, got ${validAfterThrottle.status}`);
+  }
+
   const badAdminJson = await fetch(`${baseUrl}/admin/profile?codexpro_token=${encodeURIComponent(token)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -308,11 +355,21 @@ try {
   if (home.status !== 200 || !home.headers.get('content-type')?.includes('text/html')) {
     throw new Error(`expected authenticated onboarding page to return HTML 200, got ${home.status}`);
   }
+  if (
+    home.headers.get('cache-control') !== 'no-store' ||
+    home.headers.get('referrer-policy') !== 'no-referrer' ||
+    home.headers.get('x-content-type-options') !== 'nosniff'
+  ) {
+    throw new Error('authenticated onboarding page did not set no-store, no-referrer, and nosniff headers');
+  }
   if (!homeText.includes('CodexPro Local Control') || !homeText.includes('CLI controls') || !homeText.includes('Connect ChatGPT') || !homeText.includes('Runtime guardrails')) {
     throw new Error('onboarding page did not include expected admin setup copy');
   }
   if (!homeText.includes('Connection profile') || !homeText.includes('data-profile-form')) {
     throw new Error('onboarding page did not include the saved profile editor');
+  }
+  if (!homeText.includes('history.replaceState') || !homeText.includes('initialUrl.searchParams.delete("codexpro_token")')) {
+    throw new Error('onboarding page did not remove query credentials from browser history');
   }
   for (const fieldName of ['tunnelName', 'ngrokConfig', 'cloudflareConfig', 'cloudflareTokenFile', 'toolCards', 'noInstallCloudflared']) {
     if (!homeText.includes(`name="${fieldName}"`)) {
@@ -468,6 +525,26 @@ try {
   }
 
   const mcpUrl = `${baseUrl}/mcp?codexpro_token=${encodeURIComponent(token)}`;
+  await withClient(mcpUrl, async (firstClient) => {
+    const opened = await callTool(firstClient, 'open_current_workspace', { include_tree: false });
+    const changes = await callTool(firstClient, 'show_changes', {
+      workspace_id: opened.structuredContent.workspace_id,
+      path: 'session-checkpoint.txt'
+    });
+    if (!changes.structuredContent.changed || changes.structuredContent.review_checkpoint_hit) {
+      throw new Error(`first HTTP session did not receive its workspace changes: ${JSON.stringify(changes.structuredContent)}`);
+    }
+  });
+  await withClient(mcpUrl, async (secondClient) => {
+    const opened = await callTool(secondClient, 'open_current_workspace', { include_tree: false });
+    const changes = await callTool(secondClient, 'show_changes', {
+      workspace_id: opened.structuredContent.workspace_id,
+      path: 'session-checkpoint.txt'
+    });
+    if (!changes.structuredContent.changed || changes.structuredContent.review_checkpoint_hit) {
+      throw new Error(`show_changes checkpoint leaked across HTTP sessions: ${JSON.stringify(changes.structuredContent)}`);
+    }
+  });
   const unknownSession = '00000000-0000-4000-8000-000000000000';
   await expectSessionNotFound(await postToolsListWithSession(baseUrl, token, unknownSession), 'unknown POST session');
   await expectSessionNotFound(await fetch(`${baseUrl}/mcp?codexpro_token=${encodeURIComponent(token)}`, {

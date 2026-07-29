@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { CodexProConfig } from "./config.js";
@@ -200,6 +200,21 @@ function trimOutput(value: string, maxBytes: number): { value: string; truncated
   return { value: `${sliced}\n...[output truncated to ${maxBytes} bytes]`, truncated: true };
 }
 
+function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (!child.pid) return;
+  if (process.platform === "win32") {
+    const args = ["/pid", String(child.pid), "/t", ...(signal === "SIGKILL" ? ["/f"] : [])];
+    const result = spawnSync("taskkill", args, { stdio: "ignore", windowsHide: true });
+    if (result.status !== 0) child.kill(signal);
+    return;
+  }
+  try {
+    process.kill(-child.pid, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") child.kill(signal);
+  }
+}
+
 export async function runBash(
   config: CodexProConfig,
   guard: PathGuard,
@@ -219,33 +234,58 @@ export async function runBash(
     const child = spawn(bashExecutable(), ["-lc", command], {
       cwd,
       env: makeEnv(config),
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+      windowsHide: true
     });
 
     let stdout = "";
     let stderr = "";
     let killedByTimeout = false;
+    let closed = false;
+    let terminationStarted = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    let observedOutputBytes = 0;
+    const retainedOutputBytes = config.maxOutputBytes + 1;
+
+    const terminate = (signal: NodeJS.Signals) => {
+      if (closed) return;
+      terminationStarted = true;
+      terminateProcessTree(child, signal);
+    };
+    const terminateWithEscalation = () => {
+      if (terminationStarted || closed) return;
+      terminate("SIGTERM");
+      killTimer = setTimeout(() => terminate("SIGKILL"), 1_500);
+      killTimer.unref();
+    };
+    const appendBounded = (current: string, chunk: unknown) => {
+      const bytes = Buffer.from(String(chunk), "utf8");
+      observedOutputBytes += bytes.byteLength;
+      const remaining = retainedOutputBytes - Buffer.byteLength(stdout, "utf8") - Buffer.byteLength(stderr, "utf8");
+      if (remaining <= 0) return current;
+      return current + bytes.subarray(0, remaining).toString("utf8");
+    };
 
     const timer = setTimeout(() => {
       killedByTimeout = true;
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!child.killed) child.kill("SIGKILL");
-      }, 1_500).unref();
+      terminateWithEscalation();
     }, timeoutMs);
     timer.unref();
 
     child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
-      if (Buffer.byteLength(stdout, "utf8") > config.maxOutputBytes * 2) child.kill("SIGTERM");
+      stdout = appendBounded(stdout, chunk);
+      if (observedOutputBytes > config.maxOutputBytes) terminateWithEscalation();
     });
     child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-      if (Buffer.byteLength(stderr, "utf8") > config.maxOutputBytes * 2) child.kill("SIGTERM");
+      stderr = appendBounded(stderr, chunk);
+      if (observedOutputBytes > config.maxOutputBytes) terminateWithEscalation();
     });
     child.on("error", reject);
     child.on("close", (exitCode, signal) => {
+      closed = true;
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       if (killedByTimeout) {
         stderr += `\n[codexpro] Command timed out after ${timeoutMs} ms.`;
       }

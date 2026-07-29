@@ -248,6 +248,13 @@ The terminal output separates the failure boundary:
 - `POST /mcp -> 401`: paste the complete URL, including `codexpro_token`.
 - `POST /mcp -> 2xx`: ChatGPT reached CodexPro and the MCP endpoint responded.
 
+The URL token is a personal-use compatibility fallback for connector forms
+without custom headers. Shared or multi-user production deployments require
+OAuth or `Authorization: Bearer <token>`. CodexPro
+requires at least 24 token bytes, removes token parameters from the local
+browser address after onboarding, and rate-limits failed authentication
+attempts.
+
 Keep CodexPro running while testing. A Cloudflare quick-tunnel URL changes on
 every restart. If Cloudflare returns `530` / `Error 1033`, check DNS or
 proxy-client DNS handling on the machine running `cloudflared`.
@@ -312,7 +319,7 @@ Run `codexpro setup` in each repo and save a profile per workspace.
 
 ## How do multiple ChatGPT sessions avoid overwriting each other?
 
-Workspace selection is session-local. For shared files, read the file first and pass its returned SHA-256 as `expected_sha256` to `write` or `edit`. CodexPro rejects the operation if the file changed after that read, and successful writes use atomic replacement.
+Workspace selection is session-local. For shared files, read the file first and pass its returned SHA-256 as `expected_sha256` to `write` or `edit`. CodexPro rejects the operation if the file changed after that read. New files use atomic replacement; existing files are updated in place to retain inode-bound metadata and hard links.
 
 This protects against stale file content. It does not turn CodexPro into a collaborative merge server, so separate worktrees remain the stronger choice for large overlapping changes.
 

@@ -1249,7 +1249,7 @@ function onboardingPage(config: CodexProConfig): string {
           <div class="guide-list">
             <div class="guide-item"><span class="num">1</span><span><strong>Review the profile</strong><p>Choose the tunnel, port, mode, bash, write, tool, Codex session, and workspace defaults for the next launch.</p></span></div>
             <div class="guide-item"><span class="num">2</span><span><strong>Copy the Server URL</strong><p>Use the current public URL shown in the profile when available, or the one printed by the terminal after launch.</p></span></div>
-            <div class="guide-item"><span class="num">3</span><span><strong>Create the ChatGPT app</strong><p>Choose Server URL, paste the copied URL, and use no extra authentication. The private token is already in the URL.</p></span></div>
+            <div class="guide-item"><span class="num">3</span><span><strong>Create a personal ChatGPT app</strong><p>Choose Server URL, paste the copied URL, and use no extra authentication. This private URL is for one user's connector, not a shared deployment.</p></span></div>
             <div class="guide-item"><span class="num">4</span><span><strong>Restart for policy changes</strong><p>Saved profile changes apply when CodexPro starts again. The live server does not mutate under an active ChatGPT session.</p></span></div>
           </div>
         </section>
@@ -1282,7 +1282,7 @@ function onboardingPage(config: CodexProConfig): string {
           <li><span class="num">1</span><span>Open ChatGPT settings and create an app connection.</span></li>
           <li><span class="num">2</span><span>Set Connection to <code>Server URL</code>.</span></li>
           <li><span class="num">3</span><span>Paste the public CodexPro URL from the terminal.</span></li>
-          <li><span class="num">4</span><span>Use <code>No Authentication / None</code>; the private token is already in the copied URL.</span></li>
+          <li><span class="num">4</span><span>For a personal connector, use <code>No Authentication / None</code>; the private token is already in the copied URL. Shared production access requires OAuth or an Authorization header.</span></li>
         </ol>
         <p class="note"><a class="action-link" href="${chatgptUrl}" target="_blank" rel="noreferrer">Open ChatGPT settings</a></p>
       </section>
@@ -1315,19 +1315,23 @@ function onboardingPage(config: CodexProConfig): string {
     <footer class="foot">Token-protected local control surface for this workspace. Public sharing still happens only through your chosen tunnel.</footer>
   </main>
   <script>
+    const initialUrl = new URL(window.location.href);
+    const connectorToken = initialUrl.searchParams.get("codexpro_token") || initialUrl.searchParams.get("token") || "";
+    if (connectorToken) {
+      initialUrl.searchParams.delete("codexpro_token");
+      initialUrl.searchParams.delete("token");
+      const cleanSearch = initialUrl.searchParams.toString();
+      history.replaceState(null, "", initialUrl.pathname + (cleanSearch ? "?" + cleanSearch : "") + initialUrl.hash);
+    }
     document.querySelectorAll("[data-copy], [data-copy-kind]").forEach((button) => {
       button.addEventListener("click", async () => {
         let value = button.getAttribute("data-copy") || "";
         if (button.getAttribute("data-copy-kind") === "local-mcp") {
           const base = button.getAttribute("data-copy-base") || value;
-          const params = new URLSearchParams(window.location.search);
-          const token = params.get("codexpro_token") || params.get("token") || "";
-          value = token ? base + "?codexpro_token=" + encodeURIComponent(token) : base;
+          value = connectorToken ? base + "?codexpro_token=" + encodeURIComponent(connectorToken) : base;
         } else if (button.getAttribute("data-copy-kind") === "server-url") {
           const base = button.getAttribute("data-copy-base") || value;
-          const params = new URLSearchParams(window.location.search);
-          const token = params.get("codexpro_token") || params.get("token") || "";
-          value = token ? base + "?codexpro_token=" + encodeURIComponent(token) : base;
+          value = connectorToken ? base + "?codexpro_token=" + encodeURIComponent(connectorToken) : base;
         }
         try {
           await navigator.clipboard.writeText(value);
@@ -1451,6 +1455,8 @@ async function main(): Promise<void> {
 
   const app = express();
   const logRequests = process.env.CODEXPRO_LOG_REQUESTS === "1";
+  const authFailureWindow = new Map<string, { count: number; resetAt: number }>();
+  const authFailureLimit = 10;
 
   function tokenMatches(value: unknown): boolean {
     if (!config.authToken || typeof value !== "string") return false;
@@ -1504,6 +1510,13 @@ async function main(): Promise<void> {
     res.setHeader("Cache-Control", "public, max-age=86400");
     res.type("image/svg+xml").send(LOCAL_FAVICON);
   });
+  app.use((_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    next();
+  });
   app.use((req, res, next) => {
     if (!config.authToken) {
       next();
@@ -1515,11 +1528,31 @@ async function main(): Promise<void> {
       : typeof req.query.token === "string"
         ? req.query.token
         : undefined;
-    if (!tokenMatches(bearer) && !tokenMatches(queryToken)) {
+    if (tokenMatches(bearer) || tokenMatches(queryToken)) {
+      next();
+      return;
+    }
+
+    const now = Date.now();
+    const key = req.ip || req.socket.remoteAddress || "local";
+    const current = authFailureWindow.get(key);
+    if (!current || current.resetAt <= now) {
+      authFailureWindow.set(key, { count: 1, resetAt: now + 60_000 });
       res.status(401).send("Unauthorized");
       return;
     }
-    next();
+    current.count += 1;
+    if (authFailureWindow.size > 4096) {
+      for (const [candidate, record] of authFailureWindow) {
+        if (record.resetAt <= now) authFailureWindow.delete(candidate);
+      }
+    }
+    if (current.count > authFailureLimit) {
+      res.setHeader("Retry-After", String(Math.max(1, Math.ceil((current.resetAt - now) / 1000))));
+      res.status(429).send("Too Many Authentication Attempts");
+      return;
+    }
+    res.status(401).send("Unauthorized");
   });
 
   type TransportRecord = {

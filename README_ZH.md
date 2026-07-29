@@ -93,7 +93,7 @@ codexpro settings set --clear-projects
 
 - `view_image` 会把 PNG、JPEG、GIF、WebP 作为原生 MCP 图片内容返回，ChatGPT 可以直接检查截图和视觉资源。
 - `read` 会返回 SHA-256。多个 session 可能同时修改一个文件时，把它作为 `expected_sha256` 传给 `write` 或 `edit`；文件已变化时操作会失败，不会静默覆盖新内容。
-- 文件写入采用同目录原子替换，并保留已有文件权限。
+- 新文件采用同目录原子替换。已有文件会原位更新，以保留所有权、ACL、扩展属性和硬链接；如果写入期间机器或进程崩溃，文件内容可能不完整。
 - `codexpro start --headless` 不会提问、复制链接、打开浏览器或显示终端控制面板。就绪后输出一行 `CODEXPRO_READY`，在本地运行状态中记录受监管的 runtime PID，收到信号时清理；HTTP runtime 意外退出时 launcher 以非零状态退出。
 
 ## 适合谁
@@ -177,6 +177,11 @@ Authentication: No Authentication / None
 ```
 
 表单可能默认显示 OAuth；请改为 `No Authentication / None`。复制的 Server URL 已经包含私有 `codexpro_token`。不要单独粘贴 token，除非你的 ChatGPT UI 明确支持自定义 header。
+
+URL 中的 token 只适合作为个人 connector 的兼容方式。共享或多用户生产部署必须使用
+OAuth 或 `Authorization: Bearer <token>`。CodexPro
+要求 token 至少 24 个字节；本地引导页加载后会从浏览器地址中移除 token 参数，并返回
+`no-store` 和 `no-referrer` 安全 header。不要分享或提交完整 connector URL。
 
 保持终端里的 CodexPro 进程运行。你停止它之后，ChatGPT 就无法继续连接本地仓库。Cloudflare quick tunnel 的 URL 也会失效。
 

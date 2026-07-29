@@ -83,19 +83,51 @@ async function acquireFileWriteLock(absPath: string): Promise<() => void> {
   };
 }
 
-async function atomicWriteText(absPath: string, content: string): Promise<void> {
+export async function withFileWriteLocks<T>(absPaths: string[], task: () => Promise<T> | T): Promise<T> {
+  const releases: Array<() => void> = [];
+  const orderedPaths = [...new Set(absPaths)].sort((left, right) => left.localeCompare(right));
+  try {
+    for (const absPath of orderedPaths) {
+      releases.push(await acquireFileWriteLock(absPath));
+    }
+    return await task();
+  } finally {
+    for (const release of releases.reverse()) release();
+  }
+}
+
+async function writeText(absPath: string, content: string, existingText?: string, relPath = path.basename(absPath)): Promise<void> {
+  if (existingText !== undefined) {
+    const handle = await fsp.open(absPath, "r+");
+    try {
+      const currentText = await handle.readFile("utf8");
+      if (currentText !== existingText) {
+        throw new CodexProError(`File changed during write: ${relPath}. Read the file again before writing.`);
+      }
+      const buffer = Buffer.from(content, "utf8");
+      await handle.truncate(0);
+      let offset = 0;
+      while (offset < buffer.length) {
+        const { bytesWritten } = await handle.write(buffer, offset, buffer.length - offset, offset);
+        if (bytesWritten === 0) {
+          throw new CodexProError(`Write made no progress: ${relPath}.`);
+        }
+        offset += bytesWritten;
+      }
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    return;
+  }
+
   const parent = path.dirname(absPath);
   const basename = path.basename(absPath);
   const tempPath = path.join(parent, `.${basename}.codexpro-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
   let handle: fsp.FileHandle | undefined;
   try {
-    let existingMode: number | undefined;
-    try {
-      existingMode = (await fsp.stat(absPath)).mode & 0o7777;
-    } catch {}
-    handle = await fsp.open(tempPath, "wx", existingMode ?? 0o666);
+    handle = await fsp.open(tempPath, "wx", 0o666);
     await handle.writeFile(content, "utf8");
-    if (existingMode !== undefined) await handle.chmod(existingMode);
     await handle.sync();
     await handle.close();
     handle = undefined;
@@ -358,7 +390,7 @@ export async function writeTextFile(
     }
 
     const diff = makeUnifiedDiff(oldText, content, resolved.relPath);
-    await atomicWriteText(resolved.absPath, content);
+    await writeText(resolved.absPath, content, existed ? oldText : undefined, resolved.relPath);
     return { path: resolved.relPath, bytes: contentBytes, sha256: sha256(content), existed, diff };
   } finally {
     releaseWriteLock();
@@ -412,7 +444,7 @@ export async function editTextFile(
     }
 
     const diff = makeUnifiedDiff(before, after, resolved.relPath);
-    await atomicWriteText(resolved.absPath, after);
+    await writeText(resolved.absPath, after, before, resolved.relPath);
     return { path: resolved.relPath, replacements, bytes: afterBytes, sha256: sha256(after), diff };
   } finally {
     releaseWriteLock();

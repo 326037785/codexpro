@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+const REQUEST_TIMEOUT_MS = process.platform === 'win32' ? 45_000 : 20_000;
+
 function assert(ok, message) {
   if (!ok) throw new Error(message);
 }
@@ -68,7 +70,11 @@ class McpStdioClient {
     const id = this.nextId++;
     this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`timeout waiting for ${method}\n${this.stderr}`)), 20000);
+      const operation = method === 'tools/call' && params?.name ? `${method}:${params.name}` : method;
+      const timer = setTimeout(
+        () => reject(new Error(`timeout waiting for ${operation} after ${REQUEST_TIMEOUT_MS} ms\n${this.stderr}`)),
+        REQUEST_TIMEOUT_MS
+      );
       timer.unref();
       this.pending.set(id, { resolve, reject, timer });
     });

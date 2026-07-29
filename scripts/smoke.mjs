@@ -654,7 +654,8 @@ for (let attempt = 0; attempt < 12; attempt += 1) {
     throw new Error(`apply_patch did not share the per-file write lock: ${JSON.stringify(raceResults)}`);
   }
   const finalText = await fs.readFile(path.join(tmp, 'patch-race.txt'), 'utf8');
-  if (finalText !== edited && finalText !== patched) {
+  const normalizedFinalText = finalText.replaceAll('\r\n', '\n');
+  if (normalizedFinalText !== edited && normalizedFinalText !== patched) {
     throw new Error(`apply_patch race produced a lost or partial update: ${JSON.stringify(finalText)}`);
   }
 }

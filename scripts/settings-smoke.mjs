@@ -246,6 +246,7 @@ raise SystemExit(proc.returncode or 0)
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-root-'));
 const reuseRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-reuse-'));
+const realReuseRoot = await fs.realpath(reuseRoot);
 const policyRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-policy-'));
 const runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-runtime-'));
 const staleRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-stale-'));
@@ -298,7 +299,7 @@ if (!saved.includes('Saved workspace settings')) {
 }
 
 const shown = run(['settings', 'show', '--root', root], env);
-for (const expected of ['Tunnel', 'ngrok', 'codexpro-test.ngrok-free.app', '19087', 'Tool cards', 'on', 'Bash transcript', 'full', 'Projects', reuseRoot, '<saved>']) {
+for (const expected of ['Tunnel', 'ngrok', 'codexpro-test.ngrok-free.app', '19087', 'Tool cards', 'on', 'Bash transcript', 'full', 'Projects', realReuseRoot, '<saved>']) {
   if (!shown.includes(expected)) {
     throw new Error(`settings show missing ${expected}\n${shown}`);
   }
@@ -312,7 +313,7 @@ if (
   || profile.toolCards !== true
   || profile.bashTranscript !== 'full'
   || profile.widgetDomain !== 'https://widgets.codexpro.test'
-  || JSON.stringify(profile.allowedRoots) !== JSON.stringify([await fs.realpath(reuseRoot)])
+  || JSON.stringify(profile.allowedRoots) !== JSON.stringify([realReuseRoot])
 ) {
   throw new Error(`settings profile did not persist tool/widget options: ${JSON.stringify(profile)}`);
 }

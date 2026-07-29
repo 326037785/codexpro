@@ -412,7 +412,7 @@ async function runGlobalSkillStress(root) {
     assert(loadedByName.structuredContent.text.includes('# Global Only Skill'), 'load_skill did not load unique user skill by name');
   } finally {
     client?.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
@@ -630,7 +630,7 @@ async function runBashOutputTerminationStress() {
     assert(retainedBytes < 9000, `output-limited bash retained too much output: ${retainedBytes} bytes`);
   } finally {
     client.close();
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
@@ -854,7 +854,7 @@ async function runAnalysisBudgetStress() {
     assert(limitedOutput.structuredContent.warnings.some((warning) => warning.includes('Structured output was limited')), 'inspect output limit did not report a warning');
   } finally {
     client.close();
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 

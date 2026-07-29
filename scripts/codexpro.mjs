@@ -502,7 +502,7 @@ function realDir(input) {
   if (!fs.existsSync(resolved)) throw new Error(`Directory does not exist: ${resolved}`);
   const stat = fs.statSync(resolved);
   if (!stat.isDirectory()) throw new Error(`Not a directory: ${resolved}`);
-  return fs.realpathSync(resolved);
+  return fs.realpathSync.native(resolved);
 }
 
 function configuredProjectRoots(root, args = {}, profile = {}) {

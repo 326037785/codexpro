@@ -179,14 +179,16 @@ async function discoverSkillRecords(
   options: { includeGlobal?: boolean; maxSkills?: number; homeDir?: string } = {}
 ): Promise<SkillInventoryRecord[]> {
   const maxSkills = Math.max(1, Math.min(options.maxSkills ?? 120, 500));
-  const homeDir = options.homeDir ?? os.homedir();
+  const workspaceRoot = realpathOrUndefined(workspace.root) ?? path.resolve(workspace.root);
+  const requestedHomeDir = options.homeDir ?? os.homedir();
+  const homeDir = realpathOrUndefined(requestedHomeDir) ?? path.resolve(requestedHomeDir);
   const workspaceRoots = [
-    path.join(workspace.root, ".codex", "skills"),
-    path.join(workspace.root, ".agents", "skills"),
-    path.join(workspace.root, "skills")
+    path.join(workspaceRoot, ".codex", "skills"),
+    path.join(workspaceRoot, ".agents", "skills"),
+    path.join(workspaceRoot, "skills")
   ].flatMap((dir) => {
     const real = realpathOrUndefined(dir);
-    return real && isSubpath(real, workspace.root) ? [real] : [];
+    return real && isSubpath(real, workspaceRoot) ? [real] : [];
   });
   const roots = [
     ...workspaceRoots,
@@ -215,7 +217,7 @@ async function discoverSkillRecords(
   for (const discovered of skillFiles.slice(0, maxSkills)) {
     const file = discovered.file;
     const realFile = realpathOrUndefined(file) ?? file;
-    if (isSubpath(file, workspace.root) && !isSubpath(realFile, workspace.root)) continue;
+    if (isSubpath(file, workspaceRoot) && !isSubpath(realFile, workspaceRoot)) continue;
     let text = "";
     try {
       text = await safeReadText(realFile);
@@ -227,8 +229,8 @@ async function discoverSkillRecords(
     items.push({
       name,
       description,
-      source: skillSource(realFile, workspace.root, homeDir),
-      path: displayPath(realFile, workspace.root, homeDir),
+      source: skillSource(realFile, workspaceRoot, homeDir),
+      path: displayPath(realFile, workspaceRoot, homeDir),
       absPath: realFile,
       precedence: discovered.precedence
     });
@@ -295,7 +297,8 @@ export async function loadSkill(
   }
   if (skill.source === "workspace") {
     const realSkillPath = realpathOrUndefined(skill.absPath);
-    if (!realSkillPath || !isSubpath(realSkillPath, workspace.root)) {
+    const realWorkspaceRoot = realpathOrUndefined(workspace.root) ?? path.resolve(workspace.root);
+    if (!realSkillPath || !isSubpath(realSkillPath, realWorkspaceRoot)) {
       throw new Error(`Refusing to load workspace skill outside workspace: ${skill.path}`);
     }
   }

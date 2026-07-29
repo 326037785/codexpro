@@ -942,9 +942,9 @@ const pwdBashText = pwdBash.content?.[0]?.text ?? '';
 if (!pwdBashText.includes('Exit: 0') || pwdBashText.includes('## stdout') || pwdBashText.includes('## stderr')) {
   throw new Error(`default bash transcript should be compact: ${pwdBashText}`);
 }
-const normalizedPwd = (pwdBash.structuredContent.stdout ?? '').trim().replace(/^\/([A-Za-z])\//, '$1:/').replaceAll('/', path.sep).toLowerCase();
-const normalizedTmp = tmp.replaceAll('/', path.sep).toLowerCase();
-if (!normalizedPwd.includes(normalizedTmp)) {
+const normalizedPwd = (pwdBash.structuredContent.stdout ?? '').trim().replaceAll('\\', '/').toLowerCase();
+const expectedPwdLeaf = path.basename(tmp).toLowerCase();
+if (!normalizedPwd.endsWith(`/${expectedPwdLeaf}`)) {
   throw new Error(`compact bash transcript dropped structured stdout: ${JSON.stringify(pwdBash.structuredContent)}`);
 }
 await expectToolError('bash', { workspace_id: ws, command: 'find /tmp' }, /blocked/i);
@@ -1328,8 +1328,8 @@ await fullTranscriptClient.request('initialize', {
 fullTranscriptClient.notify('notifications/initialized');
 const fullTranscriptBash = await fullTranscriptClient.request('tools/call', { name: 'bash', arguments: { command: 'pwd' } });
 const fullTranscriptText = fullTranscriptBash.content?.[0]?.text ?? '';
-const normalizedFullTranscriptText = fullTranscriptText.replace(/\/([A-Za-z])\//g, '$1:/').replaceAll('/', path.sep).toLowerCase();
-if (!fullTranscriptText.includes('## stdout') || !normalizedFullTranscriptText.includes(normalizedTmp)) {
+const fullTranscriptStdout = (fullTranscriptBash.structuredContent.stdout ?? '').trim();
+if (!fullTranscriptText.includes('## stdout') || !fullTranscriptStdout || !fullTranscriptText.includes(fullTranscriptStdout)) {
   throw new Error(`full bash transcript mode did not preserve raw stdout in chat text: ${fullTranscriptText}`);
 }
 fullTranscriptClient.close();

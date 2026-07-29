@@ -66,8 +66,17 @@ export function profileDir(): string {
   return path.join(codexProHome(), "profiles");
 }
 
+function canonicalRootForIdentity(root: string): string {
+  const resolved = path.resolve(root);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 export function profileIdForRoot(root: string): string {
-  return createHash("sha256").update(root).digest("hex").slice(0, 24);
+  return createHash("sha256").update(canonicalRootForIdentity(root)).digest("hex").slice(0, 24);
 }
 
 export function profilePathForRoot(root: string): string {
@@ -97,20 +106,21 @@ export function readWorkspaceProfile(root: string): WorkspaceProfile {
   const profile = readJsonFile(profilePath);
   if (!profile || typeof profile !== "object" || Array.isArray(profile)) return {};
   const typed = profile as WorkspaceProfile;
-  if (typed.root && typed.root !== root) return {};
+  if (typed.root && canonicalRootForIdentity(typed.root) !== canonicalRootForIdentity(root)) return {};
   return { ...typed, profilePath };
 }
 
 export function saveWorkspaceProfile(root: string, profile: WorkspaceProfile): string {
+  const canonicalRoot = canonicalRootForIdentity(root);
   const dir = profileDir();
-  const filePath = profilePathForRoot(root);
+  const filePath = profilePathForRoot(canonicalRoot);
   const { profilePath: _profilePath, ...rest } = profile;
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const payload: WorkspaceProfile = {
     version: 1,
     updatedAt: new Date().toISOString(),
     ...rest,
-    root
+    root: canonicalRoot
   };
   fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
   try {
@@ -137,7 +147,7 @@ export function readRuntimeConnection(root: string): RuntimeConnection {
   const runtime = readJsonFile(runtimePath);
   if (!runtime || typeof runtime !== "object" || Array.isArray(runtime)) return {};
   const typed = runtime as RuntimeConnection;
-  if (typed.root && typed.root !== root) return {};
+  if (typed.root && canonicalRootForIdentity(typed.root) !== canonicalRootForIdentity(root)) return {};
   if (typeof typed.pid === "number" && !processIsAlive(typed.pid)) {
     try {
       fs.rmSync(runtimePath, { force: true });

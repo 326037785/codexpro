@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Added saved additional projects with `codexpro settings set --project <path>`, session-local workspace selection through the existing `open_workspace` tool, and `--clear-projects` for removing the saved allowlist.
+- Isolated workspace selection between HTTP MCP sessions while preserving explicit workspace-id access for configured roots, with stdio, HTTP, profile, and regression coverage.
+- Added native workspace image inspection for PNG, JPEG, GIF, and WebP files through `view_image`.
+- Added optional SHA-256 preconditions and canonical-path write serialization for `write` and `edit`, preventing stale multi-session edits from silently replacing newer file content. New files use atomic replacement; existing files retain inode-bound metadata and hard-link identity through in-place updates.
+- Added `codexpro start --headless` with non-interactive readiness output, supervised HTTP-runtime failure propagation, runtime PID status, and signal cleanup.
+- Updated the MCP SDK and affected transitive HTTP, URI, and pattern-matching dependencies to patched releases; the release audit now reports zero known vulnerabilities.
+- Hardened public HTTP authentication with a 24-byte minimum token, per-client failed-attempt throttling, no-store/no-referrer browser responses, and immediate removal of onboarding token parameters from the visible URL.
+- Pinned automatic `cloudflared` installation to release `2026.7.2` and verify each supported platform asset against its published SHA-256 before writing or extracting it.
+- Closed cross-session and concurrency gaps by isolating `show_changes` checkpoints per MCP session and making `apply_patch` share canonical per-file write locks with `write` and `edit`.
+- Made bounded ripgrep truncation tolerate an interrupted final JSON record, rejected symlinked `.ai-bridge` handoff paths, and terminated timed-out bash process trees instead of only their direct shell process.
+- Closed the follow-up security findings by rejecting symlinked handoff leaf files, bounding and force-terminating output-heavy bash trees, disabling unbounded regex in the Node search fallback, size-capping verified `cloudflared` downloads, removing `cmd.exe call` re-expansion, excluding internal plans from npm packages, and adding a protected `--token-file` path for stable launches.
+
 ## 0.29.0 (2026-07-13)
 
 - Replaced the heavy v9 Apps widget with a compact, host-theme-aware v10 card for selected user-visible results: workspace, analysis, changes, Git status, handoff, and terminal verification.

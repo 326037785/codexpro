@@ -31,6 +31,12 @@ try {
   if (tarball.filename !== `${CODEXPRO_PACKAGE}-${release.version}.tgz`) {
     fail(`Unexpected tarball filename: ${tarball.filename ?? "(missing)"}.`);
   }
+  const forbiddenInternal = (tarball.files ?? [])
+    .map((entry) => entry.path)
+    .filter((file) => file.startsWith("docs/superpowers/"));
+  if (forbiddenInternal.length) {
+    fail(`Internal planning files entered the public tarball: ${forbiddenInternal.join(", ")}.`);
+  }
 
   console.log(JSON.stringify({
     name: tarball.name,

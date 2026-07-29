@@ -77,8 +77,11 @@ assertCommand(['dist/http.js', '--version'], pkg.version);
 assertCommand(['dist/http.js', '--help'], 'CodexPro MCP HTTP server');
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-smoke-'));
+const alternateWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-smoke-alternate-'));
+await fs.writeFile(path.join(alternateWorkspace, 'selected.txt'), 'alternate workspace\n', 'utf8');
 await fs.writeFile(path.join(tmp, 'demo.txt'), 'alpha\nread\nread\nomega\n', 'utf8');
 await fs.writeFile(path.join(tmp, 'other.txt'), 'keep\n', 'utf8');
+await fs.writeFile(path.join(tmp, 'patch-race.txt'), 'patch race initial\n', 'utf8');
 await fs.writeFile(path.join(tmp, 'config.txt'), 'OPENAI_API_KEY=sk-realSecretValue123\n', 'utf8');
 await fs.writeFile(path.join(tmp, 'AGENTS.md'), '# Smoke Agents\n\n- Preserve demo.txt.\n', 'utf8');
 const codexHistoryDir = path.join(tmp, 'codex-history');
@@ -172,6 +175,15 @@ await fs.mkdir(path.join(tmp, 'test'), { recursive: true });
 await fs.writeFile(path.join(tmp, 'test', 'auth.test.ts'), "import { authenticate } from '../src/auth.js';\nvoid authenticate('test');\n", 'utf8');
 await fs.writeFile(path.join(tmp, 'é.ts'), 'export const accent = 1;\n', 'utf8');
 await fs.writeFile(path.join(tmp, '旧名.ts'), 'export const renamed = true;\n', 'utf8');
+await fs.writeFile(
+  path.join(tmp, 'search-overflow.txt'),
+  Array.from({ length: 800 }, (_, index) => `overflow-marker-${String(index).padStart(4, '0')} ${'x'.repeat(80)}`).join('\n') + '\n',
+  'utf8'
+);
+await fs.writeFile(
+  path.join(tmp, 'pixel.png'),
+  Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
+);
 const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-outside-'));
 await fs.writeFile(path.join(outside, 'secret.txt'), 'do-not-read', 'utf8');
 const danglingSymlinks = [];
@@ -194,7 +206,7 @@ try {
   symlinkEscapePath = 'secret-link-dir/secret.txt';
   await fs.symlink(outside, path.join(tmp, 'secret-link-dir'), 'junction');
 }
-for (const args of [['init'], ['config', 'core.quotePath', 'true'], ['add', 'demo.txt', 'other.txt', 'AGENTS.md', 'package.json', 'src/auth.ts', 'test/auth.test.ts', 'é.ts', '旧名.ts']]) {
+for (const args of [['init'], ['config', 'core.quotePath', 'true'], ['add', 'demo.txt', 'other.txt', 'patch-race.txt', 'AGENTS.md', 'package.json', 'src/auth.ts', 'test/auth.test.ts', 'search-overflow.txt', 'é.ts', '旧名.ts']]) {
   const result = spawnSync('git', args, { cwd: tmp, encoding: 'utf8' });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
@@ -205,9 +217,15 @@ if (commitResult.status !== 0) {
   throw new Error(`git commit failed: ${commitResult.stderr || commitResult.stdout}`);
 }
 
-const client = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'safe', '--tool-mode', 'full'], {
+const client = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--allow-root', alternateWorkspace, '--bash', 'safe', '--tool-mode', 'full'], {
   cwd: path.resolve('.'),
-  env: { ...process.env, CODEXPRO_ROOT: tmp, CODEXPRO_ALLOWED_ROOTS: tmp, CODEXPRO_WIDGET_DOMAIN: 'https://widgets.codexpro.test', CODEXPRO_TOOL_CARDS: '0' }
+  env: {
+    ...process.env,
+    CODEXPRO_ROOT: tmp,
+    CODEXPRO_ALLOWED_ROOTS: [tmp, alternateWorkspace].join(path.delimiter),
+    CODEXPRO_WIDGET_DOMAIN: 'https://widgets.codexpro.test',
+    CODEXPRO_TOOL_CARDS: '0'
+  }
 });
 
 await client.request('initialize', {
@@ -218,7 +236,7 @@ await client.request('initialize', {
 client.notify('notifications/initialized');
 const tools = await client.request('tools/list', {});
 const toolNames = tools.tools.map((tool) => tool.name);
-for (const expected of ['server_config', 'codexpro_self_test', 'codexpro_inventory', 'list_workspaces', 'open_current_workspace', 'open_workspace', 'workspace_snapshot', 'inspect_workspace', 'tree', 'search', 'load_skill', 'read', 'write', 'edit', 'apply_patch', 'bash', 'git_status', 'git_diff', 'show_changes', 'read_handoff', 'wait_for_handoff', 'codex_context', 'handoff_to_agent', 'handoff_to_codex', 'export_pro_context']) {
+for (const expected of ['server_config', 'codexpro_self_test', 'codexpro_inventory', 'list_workspaces', 'open_current_workspace', 'open_workspace', 'workspace_snapshot', 'inspect_workspace', 'tree', 'search', 'load_skill', 'read', 'view_image', 'write', 'edit', 'apply_patch', 'bash', 'git_status', 'git_diff', 'show_changes', 'read_handoff', 'wait_for_handoff', 'codex_context', 'handoff_to_agent', 'handoff_to_codex', 'export_pro_context']) {
   if (!toolNames.includes(expected)) throw new Error(`missing tool: ${expected}`);
 }
 const toolCardUri = 'ui://widget/codexpro-tool-card-v10.html';
@@ -304,6 +322,44 @@ if (spawnSync(process.platform === 'win32' ? 'where' : 'sh', process.platform ==
   }
 }
 await cardClient.close();
+if (spawnSync(process.platform === 'win32' ? 'where' : 'sh', process.platform === 'win32' ? ['rg'] : ['-lc', 'command -v rg >/dev/null 2>&1']).status === 0) {
+  const limitedSearchClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'off', '--tool-mode', 'standard'], {
+    cwd: path.resolve('.'),
+    env: {
+      ...process.env,
+      CODEXPRO_ROOT: tmp,
+      CODEXPRO_ALLOWED_ROOTS: tmp,
+      CODEXPRO_MAX_OUTPUT_BYTES: '4000'
+    }
+  });
+  try {
+    await limitedSearchClient.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'codexpro-search-limit-smoke', version: '0.1.0' }
+    });
+    limitedSearchClient.notify('notifications/initialized');
+    const limitedOpened = await limitedSearchClient.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
+    const limitedSearch = await limitedSearchClient.request('tools/call', {
+      name: 'search',
+      arguments: {
+        workspace_id: limitedOpened.structuredContent.workspace_id,
+        query: 'overflow-marker',
+        path: 'search-overflow.txt',
+        max_results: 500
+      }
+    });
+    if (limitedSearch.isError || limitedSearch.structuredContent.truncated !== true) {
+      throw new Error(`ripgrep output limit did not return a bounded truncated result: ${JSON.stringify(limitedSearch.structuredContent)}`);
+    }
+    const afterLimitedSearch = await limitedSearchClient.request('tools/call', { name: 'server_config', arguments: {} });
+    if (afterLimitedSearch.isError || afterLimitedSearch.structuredContent.bashMode !== 'off') {
+      throw new Error('ripgrep output limit left the MCP server unavailable');
+    }
+  } finally {
+    await limitedSearchClient.close();
+  }
+}
 const resources = await client.request('resources/list', {});
 const toolCard = resources.resources.find((resource) => resource.uri === toolCardUri);
 if (!toolCard) throw new Error(`missing tool-card resource: ${toolCardUri}`);
@@ -355,6 +411,28 @@ if (!currentWithSkills.structuredContent.skill_inventory?.some?.((skill) => skil
 if (currentWithSkills.structuredContent.skill_inventory?.some?.((skill) => skill.name === 'outside-skill')) {
   throw new Error('open_current_workspace followed a symlinked workspace skill root outside the workspace');
 }
+const alternate = await client.request('tools/call', {
+  name: 'open_workspace',
+  arguments: { root: alternateWorkspace, include_tree: false }
+});
+const selectedRead = await client.request('tools/call', {
+  name: 'read',
+  arguments: { path: 'selected.txt' }
+});
+const selectedText = selectedRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
+if (!selectedText.includes('alternate workspace')) {
+  throw new Error(`read without workspace_id did not use selected workspace: ${selectedText}`);
+}
+const listedWorkspaces = await client.request('tools/call', { name: 'list_workspaces', arguments: {} });
+if (listedWorkspaces.structuredContent.selected_workspace_id !== alternate.structuredContent.workspace_id) {
+  throw new Error(`list_workspaces did not report selected workspace: ${JSON.stringify(listedWorkspaces.structuredContent)}`);
+}
+const resetCurrent = await client.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
+const resetRead = await client.request('tools/call', { name: 'read', arguments: { path: 'demo.txt' } });
+const resetText = resetRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
+if (resetCurrent.structuredContent.workspace_id !== current.structuredContent.workspace_id || !resetText.includes('omega')) {
+  throw new Error('open_current_workspace did not restore the launch workspace selection');
+}
 const selfTest = await client.request('tools/call', {
   name: 'codexpro_self_test',
   arguments: {
@@ -401,6 +479,12 @@ const inventory = await client.request('tools/call', { name: 'codexpro_inventory
 if (inventory.structuredContent.codexpro_tool !== 'codexpro_inventory') throw new Error('inventory result was not tagged for widget rendering');
 const opened = await client.request('tools/call', { name: 'open_workspace', arguments: { root: tmp, include_tree: true } });
 const ws = opened.structuredContent.workspace_id;
+const viewedImage = await client.request('tools/call', { name: 'view_image', arguments: { workspace_id: ws, path: 'pixel.png' } });
+const imagePart = viewedImage.content?.find?.((part) => part.type === 'image');
+if (!imagePart?.data || imagePart.mimeType !== 'image/png' || viewedImage.structuredContent.width !== 1 || viewedImage.structuredContent.height !== 1) {
+  throw new Error(`view_image did not return native PNG content: ${JSON.stringify(viewedImage.structuredContent)}`);
+}
+await expectToolError('view_image', { workspace_id: ws, path: 'demo.txt' }, /Unsupported image format/);
 const workspaceAnalysis = await client.request('tools/call', { name: 'inspect_workspace', arguments: { workspace_id: ws } });
 if (!workspaceAnalysis.structuredContent.languages?.includes('typescript') || !workspaceAnalysis.structuredContent.coverage) {
   throw new Error(`inspect_workspace omitted analysis: ${JSON.stringify(workspaceAnalysis.structuredContent)}`);
@@ -466,6 +550,172 @@ const envRefRead = await client.request('tools/call', { name: 'read', arguments:
 const envRefPayload = JSON.stringify(envRefRead);
 if (envRefPayload.includes('[REDACTED_SECRET]')) {
   throw new Error('env-var token references were incorrectly redacted as literal secrets');
+}
+await fs.writeFile(path.join(tmp, 'concurrent.txt'), 'version one\n', 'utf8');
+const concurrentRead = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: 'concurrent.txt' } });
+await fs.writeFile(path.join(tmp, 'concurrent.txt'), 'version two\n', 'utf8');
+await expectToolError('write', {
+  workspace_id: ws,
+  path: 'concurrent.txt',
+  content: 'stale overwrite\n',
+  expected_sha256: concurrentRead.structuredContent.sha256
+}, /File changed since it was read/);
+const concurrentFresh = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: 'concurrent.txt' } });
+await client.request('tools/call', {
+  name: 'edit',
+  arguments: {
+    workspace_id: ws,
+    path: 'concurrent.txt',
+    old_text: 'version two',
+    new_text: 'version three',
+    expected_sha256: concurrentFresh.structuredContent.sha256
+  }
+});
+if (await fs.readFile(path.join(tmp, 'concurrent.txt'), 'utf8') !== 'version three\n') {
+  throw new Error('conflict-safe edit did not update the file');
+}
+for (let attempt = 0; attempt < 12; attempt += 1) {
+  const original = `race original ${attempt}\n`;
+  await fs.writeFile(path.join(tmp, 'race.txt'), original, 'utf8');
+  const raceRead = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: 'race.txt' } });
+  const raceResults = await Promise.all([
+    client.request('tools/call', {
+      name: 'edit',
+      arguments: {
+        workspace_id: ws,
+        path: 'race.txt',
+        old_text: original.trim(),
+        new_text: `race winner a ${attempt}`,
+        expected_sha256: raceRead.structuredContent.sha256
+      }
+    }),
+    client.request('tools/call', {
+      name: 'edit',
+      arguments: {
+        workspace_id: ws,
+        path: 'race.txt',
+        old_text: original.trim(),
+        new_text: `race winner b ${attempt}`,
+        expected_sha256: raceRead.structuredContent.sha256
+      }
+    })
+  ]);
+  const raceSuccesses = raceResults.filter((result) => !result.isError);
+  const raceFailures = raceResults.filter((result) => result.isError);
+  if (raceSuccesses.length !== 1 || raceFailures.length !== 1) {
+    throw new Error(`expected exactly one concurrent SHA edit to succeed: ${JSON.stringify(raceResults)}`);
+  }
+  const raceFailureText = raceFailures[0].content?.find?.((part) => part.type === 'text')?.text ?? '';
+  if (!/File changed since it was read/.test(raceFailureText)) {
+    throw new Error(`concurrent SHA edit failed for the wrong reason: ${raceFailureText}`);
+  }
+}
+for (let attempt = 0; attempt < 12; attempt += 1) {
+  const original = `patch race original ${attempt}\n`;
+  const edited = `patch race edit winner ${attempt}\n`;
+  const patched = `patch race patch winner ${attempt}\n`;
+  await fs.writeFile(path.join(tmp, 'patch-race.txt'), original, 'utf8');
+  const raceRead = await client.request('tools/call', {
+    name: 'read',
+    arguments: { workspace_id: ws, path: 'patch-race.txt' }
+  });
+  const patch = [
+    'diff --git a/patch-race.txt b/patch-race.txt',
+    '--- a/patch-race.txt',
+    '+++ b/patch-race.txt',
+    '@@ -1 +1 @@',
+    `-${original.trimEnd()}`,
+    `+${patched.trimEnd()}`
+  ].join('\n') + '\n';
+  const raceResults = await Promise.all([
+    client.request('tools/call', {
+      name: 'edit',
+      arguments: {
+        workspace_id: ws,
+        path: 'patch-race.txt',
+        old_text: original.trimEnd(),
+        new_text: edited.trimEnd(),
+        expected_sha256: raceRead.structuredContent.sha256
+      }
+    }),
+    client.request('tools/call', {
+      name: 'apply_patch',
+      arguments: { workspace_id: ws, patch }
+    })
+  ]);
+  if (raceResults.filter((result) => !result.isError).length !== 1 || raceResults.filter((result) => result.isError).length !== 1) {
+    throw new Error(`apply_patch did not share the per-file write lock: ${JSON.stringify(raceResults)}`);
+  }
+  const finalText = await fs.readFile(path.join(tmp, 'patch-race.txt'), 'utf8');
+  if (finalText !== edited && finalText !== patched) {
+    throw new Error(`apply_patch race produced a lost or partial update: ${JSON.stringify(finalText)}`);
+  }
+}
+if (process.platform !== 'win32') {
+  const canonicalDir = path.join(tmp, 'canonical-lock-target');
+  const canonicalAlias = path.join(tmp, 'canonical-lock-alias');
+  await fs.mkdir(canonicalDir, { recursive: true });
+  await fs.writeFile(path.join(canonicalDir, 'shared.txt'), 'canonical original\n', 'utf8');
+  await fs.symlink(canonicalDir, canonicalAlias, 'dir');
+  const canonicalRead = await client.request('tools/call', {
+    name: 'read',
+    arguments: { workspace_id: ws, path: 'canonical-lock-target/shared.txt' }
+  });
+  const canonicalRace = await Promise.all([
+    client.request('tools/call', {
+      name: 'edit',
+      arguments: {
+        workspace_id: ws,
+        path: 'canonical-lock-target/shared.txt',
+        old_text: 'canonical original',
+        new_text: 'canonical direct winner',
+        expected_sha256: canonicalRead.structuredContent.sha256
+      }
+    }),
+    client.request('tools/call', {
+      name: 'edit',
+      arguments: {
+        workspace_id: ws,
+        path: 'canonical-lock-alias/shared.txt',
+        old_text: 'canonical original',
+        new_text: 'canonical alias winner',
+        expected_sha256: canonicalRead.structuredContent.sha256
+      }
+    })
+  ]);
+  if (canonicalRace.filter((result) => !result.isError).length !== 1 || canonicalRace.filter((result) => result.isError).length !== 1) {
+    throw new Error(`canonical-path write lock did not serialize aliases: ${JSON.stringify(canonicalRace)}`);
+  }
+}
+if (process.platform !== 'win32') {
+  const permissionPath = path.join(tmp, 'permissions.txt');
+  const hardLinkPath = path.join(tmp, 'permissions-hard-link.txt');
+  await fs.writeFile(permissionPath, 'permission before\n', 'utf8');
+  await fs.chmod(permissionPath, 0o666);
+  await fs.link(permissionPath, hardLinkPath);
+  const initialStat = await fs.stat(permissionPath);
+  const permissionRead = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: 'permissions.txt' } });
+  await client.request('tools/call', {
+    name: 'edit',
+    arguments: {
+      workspace_id: ws,
+      path: 'permissions.txt',
+      old_text: 'permission before',
+      new_text: 'permission after',
+      expected_sha256: permissionRead.structuredContent.sha256
+    }
+  });
+  const finalStat = await fs.stat(permissionPath);
+  const finalMode = finalStat.mode & 0o7777;
+  if (finalMode !== 0o666) {
+    throw new Error(`edit changed existing permissions from 0666 to ${finalMode.toString(8)}`);
+  }
+  if (finalStat.ino !== initialStat.ino) {
+    throw new Error(`edit replaced the existing inode ${initialStat.ino} with ${finalStat.ino}`);
+  }
+  if (await fs.readFile(hardLinkPath, 'utf8') !== 'permission after\n') {
+    throw new Error('edit broke existing hard-link identity');
+  }
 }
 const symlinkRead = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: symlinkEscapePath } });
 if (!symlinkRead.isError) throw new Error('symlink escape read was not blocked');
@@ -857,6 +1107,57 @@ await expectToolError('handoff_to_agent', {
   append: true
 }, /File is too large/);
 client.close();
+if (process.platform !== 'win32') {
+  const processTreeClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'full', '--tool-mode', 'full'], {
+    cwd: path.resolve('.'),
+    env: { ...process.env, CODEXPRO_ROOT: tmp, CODEXPRO_ALLOWED_ROOTS: tmp, CODEXPRO_BASH_MODE: 'full' }
+  });
+  await processTreeClient.request('initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'codexpro-process-tree-smoke', version: '0.1.0' }
+  });
+  processTreeClient.notify('notifications/initialized');
+  const processTreeOpened = await processTreeClient.request('tools/call', {
+    name: 'open_current_workspace',
+    arguments: { include_tree: false }
+  });
+  const descendantPidPath = path.join(tmp, 'bash-descendant.pid');
+  const descendantScript = [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+    `fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(child.pid));`,
+    "setInterval(() => {}, 1000);"
+  ].join('');
+  const timedOutTree = await processTreeClient.request('tools/call', {
+    name: 'bash',
+    arguments: {
+      workspace_id: processTreeOpened.structuredContent.workspace_id,
+      command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(descendantScript)}`,
+      timeout_ms: 1000
+    }
+  });
+  if (!timedOutTree.structuredContent.stderr?.includes('Command timed out')) {
+    throw new Error(`bash process-tree smoke did not time out: ${JSON.stringify(timedOutTree.structuredContent)}`);
+  }
+  const descendantPid = Number(await fs.readFile(descendantPidPath, 'utf8'));
+  let descendantAlive = true;
+  for (let attempt = 0; attempt < 20 && descendantAlive; attempt += 1) {
+    try {
+      process.kill(descendantPid, 0);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } catch (error) {
+      if (error?.code !== 'ESRCH') throw error;
+      descendantAlive = false;
+    }
+  }
+  if (descendantAlive) {
+    process.kill(descendantPid, 'SIGKILL');
+    throw new Error(`timed-out bash descendant ${descendantPid} survived process-group termination`);
+  }
+  processTreeClient.close();
+}
 async function assertToolMode(mode, expected, hidden, extraEnv = {}) {
   const args = ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'safe'];
   if (mode) args.push('--tool-mode', mode);
@@ -887,8 +1188,8 @@ async function assertToolMode(mode, expected, hidden, extraEnv = {}) {
   modeClient.close();
 }
 
-await assertToolMode('', ['codexpro', 'server_config', 'codexpro_self_test', 'open_current_workspace', 'open_workspace', 'inspect_workspace', 'tree', 'search', 'load_skill', 'read', 'write', 'edit', 'apply_patch', 'bash', 'show_changes', 'read_handoff', 'wait_for_handoff', 'export_pro_context', 'handoff_to_agent'], ['codexpro_inventory', 'workspace_snapshot', 'git_status', 'git_diff', 'codex_context', 'handoff_to_codex']);
-await assertToolMode('minimal', ['codexpro', 'server_config', 'codexpro_self_test', 'open_current_workspace', 'open_workspace', 'read', 'write', 'edit', 'apply_patch', 'bash', 'show_changes'], ['inspect_workspace', 'tree', 'search', 'load_skill', 'read_handoff', 'wait_for_handoff', 'export_pro_context', 'handoff_to_agent', 'codex_context']);
+await assertToolMode('', ['codexpro', 'server_config', 'codexpro_self_test', 'open_current_workspace', 'open_workspace', 'inspect_workspace', 'tree', 'search', 'load_skill', 'read', 'view_image', 'write', 'edit', 'apply_patch', 'bash', 'show_changes', 'read_handoff', 'wait_for_handoff', 'export_pro_context', 'handoff_to_agent'], ['codexpro_inventory', 'workspace_snapshot', 'git_status', 'git_diff', 'codex_context', 'handoff_to_codex']);
+await assertToolMode('minimal', ['codexpro', 'server_config', 'codexpro_self_test', 'open_current_workspace', 'open_workspace', 'read', 'write', 'edit', 'apply_patch', 'bash', 'show_changes'], ['inspect_workspace', 'tree', 'search', 'load_skill', 'view_image', 'read_handoff', 'wait_for_handoff', 'export_pro_context', 'handoff_to_agent', 'codex_context']);
 await assertToolMode('', ['codexpro', 'server_config', 'show_changes', 'search'], ['inspect_workspace'], { CODEXPRO_ANALYSIS: '0' });
 
 const handoffWriteClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--write', 'handoff'], {

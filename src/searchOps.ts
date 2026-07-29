@@ -58,9 +58,13 @@ async function runRipgrep(config: CodexProConfig, guard: PathGuard, workspace: W
     const child = spawn("rg", args, { cwd: workspace.root, env: { ...process.env, NO_COLOR: "1" } });
     let stdout = "";
     let stderr = "";
+    let outputLimited = false;
     child.stdout.on("data", (chunk) => {
       stdout += String(chunk);
-      if (stdout.length > config.maxOutputBytes) child.kill("SIGTERM");
+      if (!outputLimited && Buffer.byteLength(stdout, "utf8") > config.maxOutputBytes) {
+        outputLimited = true;
+        child.kill("SIGTERM");
+      }
     });
     child.stderr.on("data", (chunk) => {
       stderr += String(chunk);
@@ -75,7 +79,14 @@ async function runRipgrep(config: CodexProConfig, guard: PathGuard, workspace: W
       const lines = stdout.split("\n").filter(Boolean);
       let visibleMatches = 0;
       for (const line of lines) {
-        const value = JSON.parse(line);
+        let value: any;
+        try {
+          value = JSON.parse(line);
+        } catch (error) {
+          if (outputLimited) continue;
+          reject(new CodexProError(`ripgrep returned malformed JSON: ${error instanceof Error ? error.message : String(error)}`));
+          return;
+        }
         if (value.type !== "match") continue;
         const absPath = path.resolve(value.data?.path?.text ?? "");
         const rel = path.relative(workspace.root, absPath).split(path.sep).join("/");
@@ -87,12 +98,17 @@ async function runRipgrep(config: CodexProConfig, guard: PathGuard, workspace: W
         matches.push({ path: rel || ".", line: Number(value.data?.line_number ?? 0), text: redactSensitiveText(truncateLine(lineText)) });
       }
       const text = matches.map((m) => `${m.path}:${m.line}: ${m.text}`).join("\n") || "No matches.";
-      resolve({ text, matches, truncated: visibleMatches > matches.length || stdout.length > config.maxOutputBytes, used: "ripgrep" });
+      resolve({ text, matches, truncated: visibleMatches > matches.length || outputLimited, used: "ripgrep" });
     });
   });
 }
 
 async function runNodeSearch(config: CodexProConfig, guard: PathGuard, workspace: Workspace, options: SearchOptions): Promise<SearchResult> {
+  if (options.regex) {
+    throw new CodexProError(
+      "Regex search requires ripgrep. Install rg or retry with regex=false; the Node fallback only supports literal search."
+    );
+  }
   const files = await listFiles(guard, workspace, {
     root: options.root,
     glob: options.glob,
@@ -102,7 +118,6 @@ async function runNodeSearch(config: CodexProConfig, guard: PathGuard, workspace
   const matches: Array<{ path: string; line: number; text: string }> = [];
   let visibleMatches = 0;
   const scanBytes = textScanByteLimit(config);
-  const matcher = options.regex ? new RegExp(options.query) : undefined;
   for (const rel of files) {
     if (visibleMatches > options.maxResults) break;
     const resolved = guard.resolve(workspace, rel);
@@ -114,7 +129,7 @@ async function runNodeSearch(config: CodexProConfig, guard: PathGuard, workspace
       const lines = buffer.toString("utf8").split(/\r?\n/);
       for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i];
-        const hit = matcher ? matcher.test(line) : line.includes(options.query);
+        const hit = line.includes(options.query);
         if (hit) {
           visibleMatches += 1;
           if (matches.length < options.maxResults) {

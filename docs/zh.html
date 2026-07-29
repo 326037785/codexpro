@@ -156,7 +156,7 @@ codexpro setup</code>
           </div>
           <div>
             <small>账号要求</small>
-            <strong>能使用 Apps / Developer Mode 的 ChatGPT 账号。OpenAI 当前文档列出的 web 端范围包括 Pro、Plus、Business、Enterprise 和 Education；当前测试中 Free / Go 不支持这个 app 流程。</strong>
+            <strong>当前能使用自定义 MCP App 的 ChatGPT Web 界面。OpenAI 当前文档说明完整写入/修改 MCP 面向 Business、Enterprise 和 Edu，Pro 目前支持 read/fetch MCP。</strong>
           </div>
         </div>
       </section>
@@ -224,7 +224,7 @@ Authentication: No Authentication / None</code></pre>
             保持 Enforce CSP in developer mode 开启。CodexPro 的小组件按 CSP 开启路径设计，不依赖远程脚本、外部字体、iframe 或第三方图片。
           </p>
           <p>
-            复制的 Server URL 已包含私有 CodexPro token。连接方式选择 Server URL。表单可能默认显示 OAuth；请将 Authentication 改为 No Authentication / None，不需要单独粘贴 token。
+            复制的 Server URL 已包含私有 CodexPro token，只适合个人 connector。连接方式选择 Server URL。共享或多用户生产部署必须使用 OAuth 或 Authorization header。
           </p>
         </div>
       </section>
@@ -305,6 +305,7 @@ codexpro start</code></pre>
             <span>tree</span>
             <span>search</span>
             <span>read</span>
+            <span>view_image</span>
             <span>write</span>
             <span>edit</span>
             <span>bash</span>
@@ -366,8 +367,8 @@ codexpro start</code></pre>
         </div>
         <div class="faq-grid">
           <article>
-            <h3>需要 Plus / Pro 吗？</h3>
-            <p>需要能访问 Apps / Developer Mode 的 ChatGPT 账号。OpenAI 当前文档列出的 web 端范围包括 Pro、Plus、Business、Enterprise 和 Education；当前测试中 Free / Go 不支持这个 app 创建流程。</p>
+            <h3>需要哪种 ChatGPT 账号？</h3>
+            <p>需要当前能使用自定义 MCP App 的 ChatGPT Web 界面。OpenAI 当前文档说明完整写入/修改 MCP 面向 Business、Enterprise 和 Edu，Pro 目前支持 read/fetch MCP。可用范围可能变化，请以最新官方文档和当前界面为准。</p>
           </article>
           <article>
             <h3>这会绕过限制吗？</h3>

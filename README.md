@@ -5,7 +5,7 @@
 <h1 align="center">CodexPro</h1>
 
 <p align="center">
-  Local coding tools for ChatGPT, scoped to one repo.
+  Local coding tools for ChatGPT, scoped to explicitly allowed projects.
 </p>
 
 <p align="center">
@@ -71,6 +71,32 @@ CodexPro starts a local MCP server for the current workspace. ChatGPT can then:
 
 CodexPro is not a hosted service, model proxy, quota bypass, account pool, or OS sandbox.
 It connects your own ChatGPT session to your own local repo through the official Developer Mode / MCP app path.
+
+## Multiple Projects
+
+Keep one launch project and explicitly allow additional projects:
+
+```bash
+codexpro settings set --project ~/code/web --project ~/code/api
+codexpro start
+```
+
+`open_workspace` selects an allowed project for the current MCP session. After that, tools can omit `workspace_id` and operate on the selected project. `open_current_workspace` returns the session to the launch project.
+
+Selections are session-local, so one MCP session switching projects does not change another session. Whether separate ChatGPT conversations receive separate MCP sessions is controlled by the client. Keep using separate CodexPro processes when you need guaranteed process isolation, different permissions, or different public endpoints.
+
+Only the launch project and projects explicitly added with `--project` can be opened. Remove saved additional projects with:
+
+```bash
+codexpro settings set --clear-projects
+```
+
+## Relaunch Coding Experience
+
+- `view_image` sends PNG, JPEG, GIF, and WebP files as native MCP image content, so ChatGPT can inspect screenshots and visual assets without a separate upload.
+- `read` returns a SHA-256. Pass it as `expected_sha256` to `write` or `edit` when multiple sessions may touch the same file. A stale edit fails instead of silently overwriting newer work.
+- New files use same-directory atomic replacement. Existing files are updated in place so ownership, ACLs, extended attributes, and hard links remain attached; a machine or process crash during that write can leave partial content.
+- `codexpro start --headless` runs without prompts, clipboard access, browser opening, or terminal controls. It prints one `CODEXPRO_READY` line, publishes the supervised runtime PID in local status, cleans up on signals, and exits nonzero if the HTTP runtime dies unexpectedly.
 
 ## Repository Analysis
 
@@ -144,9 +170,13 @@ Cloudflare quick tunnels honor `HTTPS_PROXY`, `ALL_PROXY`, or `HTTP_PROXY` when 
 Stable modes should use a stable CodexPro token:
 
 ```bash
+mkdir -p ~/.codexpro
+openssl rand -hex 32 > ~/.codexpro/http-token
+chmod 600 ~/.codexpro/http-token
+
 codexpro tailscale \
   --hostname your-device.your-tailnet.ts.net \
-  --token keep-this-token-stable
+  --token-file ~/.codexpro/http-token
 ```
 
 Tailscale Funnel must already be allowed for your tailnet. It requires MagicDNS, HTTPS certificates, and Funnel policy support. CodexPro runs:
@@ -161,9 +191,17 @@ Then ChatGPT uses:
 https://your-device.your-tailnet.ts.net/mcp?codexpro_token=keep-this-token-stable
 ```
 
+The URL token is a personal-use compatibility fallback for connector forms that cannot set
+headers. Prefer `Authorization: Bearer <token>` when the MCP client supports
+custom headers. Shared or multi-user production deployments require OAuth or
+header authentication. CodexPro requires at least 24 token bytes, removes token
+parameters from the local browser address after onboarding, and sends
+no-store/no-referrer headers. Never share or commit the connector URL.
+
 ## Safety Defaults
 
 - Public tunnel mode requires a CodexPro HTTP token.
+- HTTP tokens shorter than 24 bytes are rejected and failed guesses are rate-limited per client address.
 - Generic writes are hidden unless `CODEXPRO_WRITE_MODE=workspace`.
 - Safe bash blocks broad shell patterns and secret/build/cache paths.
 - `apply_patch` is workspace-scoped and rejects blocked paths, symlink patches, and secret-looking patch content.

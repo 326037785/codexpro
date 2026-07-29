@@ -4,6 +4,40 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  CLOUDFLARED_VERSION,
+  cloudflaredReleaseAsset,
+  cloudflaredReleaseUrl,
+  readCloudflaredAssetResponse,
+  verifyCloudflaredAsset
+} from './cloudflared-release.mjs';
+
+const pinnedCloudflared = cloudflaredReleaseAsset('darwin', 'arm64');
+if (
+  CLOUDFLARED_VERSION !== '2026.7.2' ||
+  !cloudflaredReleaseUrl(pinnedCloudflared).includes(`/download/${CLOUDFLARED_VERSION}/`) ||
+  !/^[a-f0-9]{64}$/.test(pinnedCloudflared.sha256)
+) {
+  throw new Error('cloudflared release metadata is not pinned to an immutable version and digest');
+}
+try {
+  verifyCloudflaredAsset(pinnedCloudflared, Buffer.from('tampered cloudflared fixture'));
+  throw new Error('cloudflared checksum validation accepted a tampered download');
+} catch (error) {
+  if (!(error instanceof Error) || !error.message.includes('checksum mismatch')) throw error;
+}
+const oversizedAsset = { file: 'oversized-fixture', sha256: createHash('sha256').update('123456789').digest('hex') };
+for (const response of [
+  new Response('123456789', { headers: { 'content-length': '9' } }),
+  new Response('123456789')
+]) {
+  try {
+    await readCloudflaredAssetResponse(response, oversizedAsset, 8);
+    throw new Error('cloudflared response cap accepted an oversized download');
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('oversized cloudflared asset')) throw error;
+  }
+}
 
 function run(args, env) {
   const result = spawnSync(process.execPath, ['scripts/codexpro.mjs', ...args], {
@@ -226,6 +260,8 @@ const saved = run([
   'https://widgets.codexpro.test',
   '--tool-cards',
   'on',
+  '--project',
+  reuseRoot,
   '--token',
   'codexpro-settings-token'
 ], env);
@@ -234,7 +270,7 @@ if (!saved.includes('Saved workspace settings')) {
 }
 
 const shown = run(['settings', 'show', '--root', root], env);
-for (const expected of ['Tunnel', 'ngrok', 'codexpro-test.ngrok-free.app', '19087', 'Tool cards', 'on', 'Bash transcript', 'full', '<saved>']) {
+for (const expected of ['Tunnel', 'ngrok', 'codexpro-test.ngrok-free.app', '19087', 'Tool cards', 'on', 'Bash transcript', 'full', 'Projects', reuseRoot, '<saved>']) {
   if (!shown.includes(expected)) {
     throw new Error(`settings show missing ${expected}\n${shown}`);
   }
@@ -243,8 +279,25 @@ if (shown.includes('codexpro-settings-token')) {
   throw new Error(`settings show leaked token\n${shown}`);
 }
 const profile = await readProfile(root, home);
-if (profile.toolMode !== 'full' || profile.toolCards !== true || profile.bashTranscript !== 'full' || profile.widgetDomain !== 'https://widgets.codexpro.test') {
+if (
+  profile.toolMode !== 'full'
+  || profile.toolCards !== true
+  || profile.bashTranscript !== 'full'
+  || profile.widgetDomain !== 'https://widgets.codexpro.test'
+  || JSON.stringify(profile.allowedRoots) !== JSON.stringify([await fs.realpath(reuseRoot)])
+) {
   throw new Error(`settings profile did not persist tool/widget options: ${JSON.stringify(profile)}`);
+}
+run([
+  'settings',
+  'set',
+  '--root',
+  root,
+  '--clear-projects'
+], env);
+const clearedProjectsProfile = await readProfile(root, home);
+if (clearedProjectsProfile.allowedRoots !== undefined) {
+  throw new Error(`settings profile did not clear saved projects: ${JSON.stringify(clearedProjectsProfile)}`);
 }
 
 runFail([
@@ -441,6 +494,42 @@ await withStartedCodexPro([
 try {
   await fs.access(runtimePath);
   throw new Error('runtime status was not cleared after launcher SIGTERM');
+} catch (error) {
+  if (error?.code !== 'ENOENT') throw error;
+}
+
+const headlessRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-headless-'));
+const headlessPort = await getFreePort();
+const headlessRuntimePath = await runtimeStatusPath(headlessRoot, home);
+await withStartedCodexPro([
+  '--root',
+  headlessRoot,
+  '--tunnel',
+  'none',
+  '--port',
+  String(headlessPort),
+  '--headless'
+], env, async (child) => {
+  const runtime = await waitForJson(
+    headlessRuntimePath,
+    (data) => data.pid === child.pid && Number.isInteger(data.runtimePid),
+    'headless runtime status'
+  );
+  if (runtime.runtimePid === child.pid) {
+    throw new Error(`headless runtime did not publish its supervised child pid: ${JSON.stringify(runtime)}`);
+  }
+  process.kill(runtime.runtimePid, 'SIGTERM');
+  const closed = await Promise.race([
+    new Promise((resolve) => child.once('close', (code, signal) => resolve({ code, signal }))),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('headless launcher did not exit after HTTP runtime stopped')), 10_000))
+  ]);
+  if (closed.code === 0) {
+    throw new Error(`headless launcher exited successfully after unexpected runtime loss: ${JSON.stringify(closed)}`);
+  }
+});
+try {
+  await fs.access(headlessRuntimePath);
+  throw new Error('headless runtime status was not cleared after supervised child exit');
 } catch (error) {
   if (error?.code !== 'ENOENT') throw error;
 }

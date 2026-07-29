@@ -6,10 +6,10 @@
     <title>CodexPro - Use ChatGPT like your local coding agent</title>
     <meta
       name="description"
-      content="CodexPro connects ChatGPT Developer Mode to one local workspace through MCP so ChatGPT can inspect, edit, verify, and hand off code safely."
+      content="CodexPro connects ChatGPT Developer Mode to explicitly allowed local projects through MCP so ChatGPT can inspect, edit, verify, and hand off code safely."
     />
     <meta property="og:title" content="CodexPro" />
-    <meta property="og:description" content="Use ChatGPT like your local coding agent for one token-protected workspace." />
+    <meta property="og:description" content="Use ChatGPT like your local coding agent for token-protected, explicitly allowed projects." />
     <meta property="og:image" content="https://rebel0789.github.io/codexpro/og.svg" />
     <meta name="theme-color" content="#0b1220" />
     <link rel="alternate" hreflang="zh-CN" href="https://rebel0789.github.io/codexpro/zh.html" />
@@ -41,7 +41,7 @@
           <p class="eyebrow">Install in your repo</p>
           <h1>Use ChatGPT like your local coding agent.</h1>
           <p class="hero-lede">
-            Install the CLI, run setup inside one project, then paste the copied Server URL into ChatGPT Developer Mode. ChatGPT gets bounded tools for that workspace: context, search, exact edits, git review, safe verification, and handoff files.
+            Install the CLI, run setup inside a project, then paste the copied Server URL into ChatGPT Developer Mode. ChatGPT gets bounded tools for the launch project and any additional projects you explicitly allow.
           </p>
           <div class="install-line" role="group" aria-label="Install command">
             <code>npm install -g codexpro
@@ -50,7 +50,7 @@ codexpro setup</code>
           </div>
           <p class="eyebrow">Main docs may be ahead of npm; check the npm version or use a source checkout for unreleased behavior.</p>
           <div class="hero-proof" aria-label="Core capabilities">
-            <span>one workspace</span>
+            <span>explicit project access</span>
             <span>token-protected URL</span>
             <span>safe bash default</span>
             <span>repo-backed context</span>
@@ -67,7 +67,7 @@ codexpro setup</code>
             <div class="demo-status">
               <span class="status-dot" aria-hidden="true"></span>
               <div class="status-label">
-                <strong>One local workspace</strong>
+                <strong>Selected local project</strong>
                 <small>your repo · your ChatGPT session · your machine</small>
               </div>
               <span class="status-badge">bounded</span>
@@ -126,7 +126,7 @@ codexpro setup</code>
           <p class="eyebrow">Use the account you already have</p>
           <h2>Give ChatGPT a real local workspace, not another paste buffer.</h2>
           <p>
-            CodexPro is for builders who already pay for ChatGPT and want that subscription to do more than answer questions. It gives ChatGPT a local workspace bridge: file reads, exact edits, source writes, search, git status, git diff, and allowlisted verification commands.
+            CodexPro is for builders who already pay for ChatGPT and want that subscription to do more than answer questions. It gives ChatGPT a local project bridge: file reads, exact edits, source writes, search, git status, git diff, and allowlisted verification commands.
           </p>
           <p>
             Codex and ChatGPT are different product surfaces. If one workflow is unavailable and another surface you already have access to is still available, CodexPro lets you work against the same local repo without changing either product's limits.
@@ -150,7 +150,7 @@ codexpro setup</code>
           </div>
           <div>
             <small>Best account fit</small>
-            <strong>ChatGPT account with Apps / Developer Mode access. OpenAI lists Developer Mode for Pro, Plus, Business, Enterprise, and Education on web; Free and Go do not expose this app flow in current testing.</strong>
+            <strong>A ChatGPT web surface with custom MCP access. OpenAI currently documents full write/modify MCP for Business and Enterprise/Edu, with read/fetch MCP access for Pro.</strong>
           </div>
         </div>
       </section>
@@ -193,7 +193,7 @@ codexpro setup</code>
           <p class="eyebrow">Compared with generic workspace bridges</p>
           <h2>CodexPro is the ChatGPT-first local coding loop.</h2>
           <p>
-            The transport can look similar: local MCP server, workspace root, and a tunnel. CodexPro is more opinionated. It is built for one job: make ChatGPT Developer Mode useful against one local repo without widening the trust boundary.
+            The transport can look similar: local MCP server, workspace root, and a tunnel. CodexPro is more opinionated. It is built for one job: make ChatGPT Developer Mode useful against explicitly allowed local projects without widening the trust boundary.
           </p>
           <p>
             That means setup first, explicit safety modes, repo-backed context files, reviewable diffs, compact cards, and no model proxying, account pooling, quota bypassing, third-party Pro scraping, or OS sandbox claims.
@@ -202,7 +202,7 @@ codexpro setup</code>
         <div class="value-matrix">
           <div>
             <small>Product loop</small>
-            <strong>Install, setup in one repo, paste Server URL, then let ChatGPT inspect/edit/verify.</strong>
+            <strong>Install, setup in a repo, allow only the projects you choose, then inspect/edit/verify.</strong>
           </div>
           <div>
             <small>Control surface</small>
@@ -426,7 +426,7 @@ cloudflared tunnel route dns codexpro codexpro.example.com</code></pre>
               <div><dt>Server URL</dt><dd>Paste copied CodexPro URL</dd></div>
               <div><dt>Authentication</dt><dd>No Authentication / None</dd></div>
             </dl>
-            <p>The form may initially show OAuth; select No Authentication / None. The copied Server URL already includes the private CodexPro token. Do not paste the token separately unless your ChatGPT UI supports custom headers.</p>
+            <p>The form may initially show OAuth; select No Authentication / None. The copied Server URL includes a private CodexPro token and is for a personal connector only. Shared or multi-user production deployments require OAuth or Authorization-header authentication.</p>
           </article>
           <article>
             <small>Doctor</small>
@@ -473,6 +473,7 @@ codexpro settings delete --yes</code></pre>
             <span>tree</span>
             <span>search</span>
             <span>read</span>
+            <span>view_image</span>
             <span>write</span>
             <span>edit</span>
             <span>bash</span>
@@ -545,7 +546,7 @@ codexpro settings delete --yes</code></pre>
         <div class="faq-grid">
           <article>
             <h3>Which ChatGPT account should I use?</h3>
-            <p>Use a ChatGPT account with Apps / Developer Mode access. OpenAI lists Developer Mode for Pro, Plus, Business, Enterprise, and Education accounts on web. Current testing shows free and Go accounts do not expose the app flow needed for CodexPro. A specific model surface may still be unable to call connectors; use Pro context fallback for those sessions.</p>
+            <p>Use a ChatGPT web surface with custom MCP access. OpenAI currently documents full write/modify MCP for Business and Enterprise/Edu, with read/fetch MCP access for Pro. Availability can change, and a specific model surface may still be unable to call connectors; use Pro context fallback for those sessions.</p>
           </article>
           <article>
             <h3>Does CodexPro bypass rate limits?</h3>

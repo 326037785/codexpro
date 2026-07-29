@@ -71,6 +71,71 @@ if (missingPlaceholder.status === 0 || !missingPlaceholder.stderr.includes('must
   throw new Error(`custom command without plan placeholder should fail\nstdout:\n${missingPlaceholder.stdout}\nstderr:\n${missingPlaceholder.stderr}`);
 }
 
+if (process.platform !== 'win32') {
+  const symlinkRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-execute-symlink-root-'));
+  const outsideContext = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-execute-symlink-outside-'));
+  await fs.writeFile(path.join(outsideContext, 'current-plan.md'), '# Outside plan\n', 'utf8');
+  await fs.symlink(outsideContext, path.join(symlinkRoot, '.ai-bridge'));
+  await fs.writeFile(path.join(symlinkRoot, 'noop-agent.mjs'), '', 'utf8');
+  const symlinkRun = run([
+    'execute-handoff',
+    '--root',
+    symlinkRoot,
+    '--agent',
+    'custom',
+    '--command',
+    `${quoteArg(process.execPath)} noop-agent.mjs --task-file {{plan_file}}`,
+    '--yes'
+  ]);
+  if (symlinkRun.status === 0 || !symlinkRun.stderr.includes('Symlink paths are not allowed for local handoff files')) {
+    throw new Error(`execute-handoff followed a symlinked context directory\nstdout:\n${symlinkRun.stdout}\nstderr:\n${symlinkRun.stderr}`);
+  }
+  const outsideEntries = (await fs.readdir(outsideContext)).sort();
+  if (outsideEntries.join(',') !== 'current-plan.md') {
+    throw new Error(`execute-handoff wrote outside the workspace through a context symlink: ${outsideEntries.join(', ')}`);
+  }
+
+  const leafRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-execute-leaf-root-'));
+  const leafOutside = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-execute-leaf-outside-'));
+  await fs.mkdir(path.join(leafRoot, '.ai-bridge'));
+  await fs.writeFile(path.join(leafOutside, 'plan.md'), '# Outside plan\n', 'utf8');
+  await fs.symlink(path.join(leafOutside, 'plan.md'), path.join(leafRoot, '.ai-bridge', 'current-plan.md'));
+  const planLeafRun = run([
+    'execute-handoff',
+    '--root',
+    leafRoot,
+    '--agent',
+    'custom',
+    '--command',
+    `${quoteArg(process.execPath)} --version {{plan_file}}`,
+    '--yes'
+  ]);
+  if (planLeafRun.status === 0 || !planLeafRun.stderr.includes('Symlink paths are not allowed for local handoff files')) {
+    throw new Error(`execute-handoff followed a symlinked plan leaf\nstdout:\n${planLeafRun.stdout}\nstderr:\n${planLeafRun.stderr}`);
+  }
+
+  await fs.rm(path.join(leafRoot, '.ai-bridge', 'current-plan.md'));
+  await fs.writeFile(path.join(leafRoot, '.ai-bridge', 'current-plan.md'), '# Safe plan\n', 'utf8');
+  await fs.writeFile(path.join(leafOutside, 'status.md'), 'outside unchanged\n', 'utf8');
+  await fs.symlink(path.join(leafOutside, 'status.md'), path.join(leafRoot, '.ai-bridge', 'agent-status.md'));
+  const statusLeafRun = run([
+    'execute-handoff',
+    '--root',
+    leafRoot,
+    '--agent',
+    'custom',
+    '--command',
+    `${quoteArg(process.execPath)} --version {{plan_file}}`,
+    '--yes'
+  ]);
+  if (statusLeafRun.status === 0 || !statusLeafRun.stderr.includes('Symlink paths are not allowed for local handoff files')) {
+    throw new Error(`execute-handoff followed a symlinked output leaf\nstdout:\n${statusLeafRun.stdout}\nstderr:\n${statusLeafRun.stderr}`);
+  }
+  if (await fs.readFile(path.join(leafOutside, 'status.md'), 'utf8') !== 'outside unchanged\n') {
+    throw new Error('execute-handoff overwrote an outside file through a leaf symlink');
+  }
+}
+
 await fs.writeFile(path.join(root, 'empty-arg-agent.mjs'), `
 const emptyIndex = process.argv.indexOf('--empty');
 if (emptyIndex < 0 || process.argv[emptyIndex + 1] !== '') {

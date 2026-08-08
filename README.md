@@ -64,6 +64,7 @@ CodexPro starts a local MCP server for the current workspace. ChatGPT can then:
 - read files and inspect the repo
 - search code
 - make scoped edits with `write`, `edit`, or guarded `apply_patch`
+- import ChatGPT Apps SDK attachments with `import_file` in workspace write mode
 - run safe verification commands through `bash`
 - review changed files with `show_changes`
 - write handoff plans under `.ai-bridge`

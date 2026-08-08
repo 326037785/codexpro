@@ -8,6 +8,7 @@
 - Rejected invalid relative `HOME` values such as `=` in restricted bash child environments, prefer a usable absolute `USERPROFILE`/`HOME`, and forward Windows `APPDATA`/`LOCALAPPDATA` when valid so npm cache dirs are not created inside workspaces.
 - Raised the bash `timeout_ms` hard cap from 180s to 10 minutes by default (max 15 minutes via `CODEXPRO_MAX_BASH_TIMEOUT_MS`). Per-command default remains 30s.
 - Follow directory symlinks under configured skill roots during skill discovery so managers such as cc-switch can install skills as links. Thanks @yuczzzzz. Keep symlinked/junction skills tagged by their configured scan root and accept both realpathed and caller-supplied home spellings so Windows junctions keep `user` / `~/` identity.
+- Added `import_file` for ChatGPT Apps SDK attachments (`openai/fileParams`), with HTTPS host allowlisting, redirect revalidation, streaming size limits, SHA-256 checks, MIME sniffing, and workspace write-mode gating.
 - Documented update steps (`npm install -g codexpro@latest`), ChatGPT web Agent vs CodexPro, and dual-account / dual-tunnel process separation in the English and Chinese FAQs.
 - Updated transitive dependencies so `npm audit --audit-level=high` reports zero known vulnerabilities.
 

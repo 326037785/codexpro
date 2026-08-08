@@ -111,6 +111,29 @@ CodexPro is a local MCP bridge: your ChatGPT session talks to an approved folder
 
 Use the web Agent for web work. Use CodexPro when the source of truth is a local repository.
 
+## How do I import a ChatGPT attachment into my repo?
+
+In workspace write mode, CodexPro advertises `import_file`. ChatGPT must pass an Apps SDK file object:
+
+```json
+{
+  "download_url": "https://...",
+  "file_id": "file_...",
+  "mime_type": "image/png",
+  "file_name": "screenshot.png"
+}
+```
+
+CodexPro marks that argument with `_meta["openai/fileParams"]`. It downloads only temporary HTTPS URLs from approved ChatGPT/OpenAI file hosts, enforces `CODEXPRO_MAX_IMPORT_BYTES`, rejects private/loopback redirect targets, and writes into the allowed workspace only. Overwrite defaults to false. Arbitrary user- or model-supplied download URLs are rejected.
+
+Example destination:
+
+```text
+docs/evidence/screenshot.png
+```
+
+If the client does not provide `download_url` and `file_id`, the tool returns an unsupported-reference error and creates no files.
+
 ## What do I enable in ChatGPT?
 
 Open ChatGPT and go to:

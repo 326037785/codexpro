@@ -53,6 +53,23 @@ CodexPro 是本地 MCP bridge：用你自己的 ChatGPT 会话，通过 Develope
 
 网页工作用网页 Agent；本地仓库是事实来源时用 CodexPro。
 
+## 怎么把 ChatGPT 附件导入仓库？
+
+在 workspace write 模式下，CodexPro 会暴露 `import_file`。ChatGPT 需要传入 Apps SDK 文件对象：
+
+```json
+{
+  "download_url": "https://...",
+  "file_id": "file_...",
+  "mime_type": "image/png",
+  "file_name": "screenshot.png"
+}
+```
+
+该参数通过 `_meta["openai/fileParams"]` 声明。CodexPro 只会从已批准的 ChatGPT/OpenAI 文件域名下载临时 HTTPS URL，遵守 `CODEXPRO_MAX_IMPORT_BYTES`，拒绝私网/回环重定向，并且只写入已允许的工作区。默认不允许覆盖。任意用户或模型自行提供的下载 URL 会被拒绝。
+
+如果客户端没有同时提供 `download_url` 和 `file_id`，工具会返回 unsupported-reference 错误，并且不会创建任何文件。
+
 ## ChatGPT 里要打开什么设置？
 
 在 ChatGPT 中打开：

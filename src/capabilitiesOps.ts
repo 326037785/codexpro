@@ -91,21 +91,21 @@ function realpathOrUndefined(filePath: string): string | undefined {
 }
 
 function displayPath(absPath: string, workspaceRoot: string, home = os.homedir()): string {
-  if (absPath === workspaceRoot) return "$WORKSPACE";
-  if (absPath.startsWith(`${workspaceRoot}${path.sep}`)) {
+  if (absPath === workspaceRoot || isSubpath(absPath, workspaceRoot)) {
+    if (absPath === workspaceRoot) return "$WORKSPACE";
     return `$WORKSPACE/${path.relative(workspaceRoot, absPath).split(path.sep).join("/")}`;
   }
-  if (absPath === home) return "~";
-  if (absPath.startsWith(`${home}${path.sep}`)) {
+  if (absPath === home || isSubpath(absPath, home)) {
+    if (absPath === home) return "~";
     return `~/${path.relative(home, absPath).split(path.sep).join("/")}`;
   }
   return absPath;
 }
 
 function skillSource(skillPath: string, workspaceRoot: string, home = os.homedir()): SkillInventoryItem["source"] {
-  if (skillPath.startsWith(`${workspaceRoot}${path.sep}`)) return "workspace";
+  if (skillPath === workspaceRoot || isSubpath(skillPath, workspaceRoot)) return "workspace";
   if (skillPath.includes(`${path.sep}.codex${path.sep}plugins${path.sep}`)) return "plugin";
-  if (skillPath.startsWith(`${home}${path.sep}`)) return "user";
+  if (skillPath === home || isSubpath(skillPath, home)) return "user";
   return "other";
 }
 

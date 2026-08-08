@@ -7,7 +7,7 @@
 - Published the multi-project allowlist that was already on `main`: `codexpro settings set --project`, `--clear-projects`, session-local `open_workspace` selection, and matching FAQ guidance. npm `0.29.0` did not include those commits, which caused empty Allowed Roots reports after following current docs.
 - Rejected invalid relative `HOME` values such as `=` in restricted bash child environments, prefer a usable absolute `USERPROFILE`/`HOME`, and forward Windows `APPDATA`/`LOCALAPPDATA` when valid so npm cache dirs are not created inside workspaces.
 - Raised the bash `timeout_ms` hard cap from 180s to 10 minutes by default (max 15 minutes via `CODEXPRO_MAX_BASH_TIMEOUT_MS`). Per-command default remains 30s.
-- Follow directory symlinks under configured skill roots during skill discovery so managers such as cc-switch can install skills as links. Thanks @yuczzzzz.
+- Follow directory symlinks under configured skill roots during skill discovery so managers such as cc-switch can install skills as links. Thanks @yuczzzzz. Classify resolved skill paths with case-insensitive root checks so Windows junctions keep `user` / `~/` identity.
 - Documented update steps (`npm install -g codexpro@latest`), ChatGPT web Agent vs CodexPro, and dual-account / dual-tunnel process separation in the English and Chinese FAQs.
 - Updated transitive dependencies so `npm audit --audit-level=high` reports zero known vulnerabilities.
 

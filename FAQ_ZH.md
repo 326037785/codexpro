@@ -30,6 +30,46 @@ codexpro start
 
 `npx codexpro@latest start` 仍然可用，但普通用户更容易理解全局安装。
 
+## 怎么更新 CodexPro？
+
+没有 `codexpro update` 命令。重新安装最新包并重启连接即可：
+
+```bash
+npm install -g codexpro@latest
+codexpro --version
+```
+
+然后停掉旧进程，在启动仓库里重新运行 `codexpro start`。`~/.codexpro` 下的已保存配置会保留。
+
+如果文档写了某个功能，但 `codexpro --version` 还没有，说明 GitHub `main` 比 npm `latest` 新。等下一版发布，或从带 tag 的 GitHub release 安装。
+
+## CodexPro 和网页版自带 Agent 有什么区别？
+
+用途不同。
+
+ChatGPT 网页版 Agent 适合浏览、网页研究和通用网页任务。默认情况下，它不能打开你电脑上的本地 Git 仓库，不能读 `AGENTS.md`，不能看当前分支/`git diff`，也不能在你批准的本地工作区内做受控编辑或跑本地验证命令。
+
+CodexPro 是本地 MCP bridge：用你自己的 ChatGPT 会话，通过 Developer Mode / Plugins 连接你电脑上明确允许的仓库。它不是网页 Agent 的替代品，也不绕过账号限制，更不是远程 shell 服务。
+
+网页工作用网页 Agent；本地仓库是事实来源时用 CodexPro。
+
+## 怎么把 ChatGPT 附件导入仓库？
+
+在 workspace write 模式下，CodexPro 会暴露 `import_file`。ChatGPT 需要传入 Apps SDK 文件对象：
+
+```json
+{
+  "download_url": "https://...",
+  "file_id": "file_...",
+  "mime_type": "image/png",
+  "file_name": "screenshot.png"
+}
+```
+
+该参数通过 `_meta["openai/fileParams"]` 声明。CodexPro 只会从已批准的 ChatGPT/OpenAI 文件域名下载临时 HTTPS URL，遵守 `CODEXPRO_MAX_IMPORT_BYTES`，拒绝私网/回环重定向，并且只写入已允许的工作区。默认不允许覆盖。任意用户或模型自行提供的下载 URL 会被拒绝。
+
+如果客户端没有同时提供 `download_url` 和 `file_id`，工具会返回 unsupported-reference 错误，并且不会创建任何文件。
+
 ## ChatGPT 里要打开什么设置？
 
 在 ChatGPT 中打开：
@@ -232,25 +272,31 @@ Cloudflare quick tunnel 是一次性的临时地址。每次重新启动 tunnel�
 
 ## 同时跑两个仓库怎么办？
 
-如果只是希望通过同一个 connector 切换项目，可以先在主项目保存额外项目：
+如果只是希望通过同一个 connector 切换项目，先在启动仓库保存额外项目：
 
 ```bash
-codexpro settings set --project ~/code/repo-b --project ~/code/repo-c
+cd ~/code/app
+codexpro settings set --project ~/code/web --project ~/code/api
+codexpro settings show
 codexpro start
 ```
 
-`open_workspace` 会把已允许的项目设为当前 MCP session 的选择。之后其他工具可以省略 `workspace_id`。`open_current_workspace` 会切回启动时的主项目。
+确认输出里的 `Projects` 列出了额外根目录，然后重启 connector，管理页 Allowed Roots 才会刷新。让 ChatGPT 打开已允许的项目。`open_workspace` 会把它设为当前 MCP session 的选择，之后其他工具可以省略 `workspace_id`。`open_current_workspace` 会切回启动时的主项目。
 
-项目选择按 MCP session 隔离，但 ChatGPT conversation 不保证和 MCP session 一一对应。需要严格隔离时，请为每个仓库使用不同本地端口和不同 tunnel hostname。
+清除已保存的额外项目：
 
-示例：
-
-```text
-repo A: port 8787, hostname A
-repo B: port 8788, hostname B
+```bash
+codexpro settings set --clear-projects
 ```
 
-分别在两个仓库里运行 `codexpro setup` 并保存 profile。
+项目选择按 MCP session 隔离，但 ChatGPT conversation 不保证和 MCP session 一一对应。需要严格隔离、两个 ChatGPT 账号、或两个 ngrok 域名时，请跑两个 CodexPro 进程，并用不同本地端口和不同公网 hostname：
+
+```text
+repo A: port 8787, hostname A, ChatGPT plugin URL A
+repo B: port 8788, hostname B, ChatGPT plugin URL B
+```
+
+分别在两个仓库里运行 `codexpro setup` 并保存 profile。不要把同一个 Server URL 给两个账号共用。
 
 ## 多个 ChatGPT session 怎么避免互相覆盖？
 

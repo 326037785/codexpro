@@ -2,9 +2,9 @@
 
 ## 我应该用什么 ChatGPT 账号？
 
-使用当前能访问自定义 MCP App 的 ChatGPT 账号和 Web 界面。OpenAI 2026 年 7 月的文档说明：包含写入和修改操作的完整 MCP 目前面向 Business、Enterprise 和 Edu；Pro 目前只能连接 read/fetch 权限的 MCP App。该文档没有把 Plus 列为支持自定义 MCP 的账号层级。
+使用当前能创建自定义 MCP 插件的 ChatGPT 账号和 Web 界面。OpenAI 2026 年 7 月的文档说明：包含写入和修改操作的完整 MCP 目前面向 Business、Enterprise 和 Edu；Pro 目前只能连接 read/fetch 权限的 MCP App。该文档没有把 Plus 列为支持自定义 MCP 的账号层级。
 
-CodexPro 不解锁 Developer Mode，不解锁模型，不绕过账号限制，也不提供账号访问。它只连接你自己的 ChatGPT App 界面和你自己的本地仓库。
+CodexPro 不解锁 Plugins，不解锁模型，不绕过账号限制，也不提供账号访问。它只连接你自己的 ChatGPT Plugins 界面和你自己的本地仓库。
 
 ## 推荐安装方式是什么？
 
@@ -49,7 +49,7 @@ codexpro --version
 
 ChatGPT 网页版 Agent 适合浏览、网页研究和通用网页任务。默认情况下，它不能打开你电脑上的本地 Git 仓库，不能读 `AGENTS.md`，不能看当前分支/`git diff`，也不能在你批准的本地工作区内做受控编辑或跑本地验证命令。
 
-CodexPro 是本地 MCP bridge：用你自己的 ChatGPT 会话，通过 Developer Mode / Plugins 连接你电脑上明确允许的仓库。它不是网页 Agent 的替代品，也不绕过账号限制，更不是远程 shell 服务。
+CodexPro 是本地 MCP bridge：用你自己的 ChatGPT 会话，通过 Plugins 连接你电脑上明确允许的仓库。Developer mode 只是创建自定义插件所需的设置开关。它不是网页 Agent 的替代品，也不绕过账号限制，更不是远程 shell 服务。
 
 网页工作用网页 Agent；本地仓库是事实来源时用 CodexPro。
 
@@ -113,7 +113,7 @@ CodexPro 不绕过、不提升、不合并、不转售、不修改 ChatGPT、Cod
 
 ## CodexPro 可以使用 GPT-5.5 吗？
 
-前提是你的 ChatGPT 账号已经在 Web 产品里提供这个模型或同级更强模型，并且该模型界面可以调用 Developer Mode Apps。
+前提是你的 ChatGPT 账号已经在 Web 产品里提供这个模型或同级更强模型，并且该模型界面可以调用自定义 MCP 插件。
 
 CodexPro 不提供、不代理、不转售、也不解锁模型。它只给兼容的 ChatGPT 会话提供本地仓库工具。
 
@@ -326,7 +326,7 @@ https://rebel0789.github.io/codexpro/zh.html
 
 ## CodexPro 是否违反服务条款？
 
-CodexPro 使用 ChatGPT 的官方 Developer Mode / MCP App 接入路径，让你自己的 ChatGPT 会话连接到你自己的本地工具。
+CodexPro 使用 ChatGPT 的官方 Plugins + MCP 接入路径，让你自己的 ChatGPT 会话连接到你自己的本地工具。Developer mode 只是创建自定义插件所需的设置开关。
 
 它不绕过限制，不抓取隐藏接口，不共享账号，不转售模型，不伪造请求来源，也不把第三方模型包装成别的模型。
 

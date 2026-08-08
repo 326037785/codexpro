@@ -2,9 +2,9 @@
 
 ## Which ChatGPT account should I use?
 
-Use a ChatGPT account and web surface that currently exposes custom MCP apps. OpenAI's July 2026 documentation says full MCP, including write/modify actions, is available to Business and Enterprise/Edu. Pro can connect MCP apps with read/fetch permissions, but does not currently receive full MCP write support. Plus is not listed as a supported custom-MCP tier in that documentation.
+Use a ChatGPT account that can create custom MCP plugins. OpenAI's July 2026 documentation says full MCP, including write/modify actions, is available to Business and Enterprise/Edu. Pro can connect MCP apps with read/fetch permissions, but does not currently receive full MCP write support. Plus is not listed as a supported custom-MCP tier in that documentation.
 
-CodexPro does not unlock Developer Mode, unlock models, bypass account limits, or provide account access. It connects to the ChatGPT app surface your account already has.
+CodexPro does not unlock Plugins, unlock models, bypass account limits, or provide account access. It connects to the ChatGPT plugin surface your account already has.
 
 Plan access and model tool support are separate, and availability can change. If CodexPro actions are unavailable in that chat, use another tool-capable ChatGPT surface or the Pro context fallback for that session.
 
@@ -12,18 +12,18 @@ Plan access and model tool support are separate, and availability can change. If
 
 They can look similar at the transport layer because both use a local MCP-style bridge and a workspace root.
 
-CodexPro is more focused: it is built around one clear product loop for ChatGPT users:
+CodexPro is built around one product loop:
 
 ```text
-install -> setup in a repo -> paste Server URL into ChatGPT -> inspect/edit/verify/review allowed projects
+install -> setup in a repo -> paste Server URL into ChatGPT Plugins -> inspect/edit/verify/review allowed projects
 ```
 
 The main differences are:
 
-- CodexPro is ChatGPT Developer Mode first, not a generic workspace bridge.
+- CodexPro is ChatGPT Plugins + MCP first, not a generic workspace bridge.
 - Bash, write/edit, tool mode, Codex session reads, and handoff execution are separate safety controls.
 - Durable context is repo-backed through `AGENTS.md` and `.ai-bridge/*`, so important project memory stays reviewable in files.
-- The normal workflow emphasizes compact cards, diffs, `show_changes`, smoke tests, and handoff status files.
+- The normal workflow emphasizes diffs, `show_changes`, smoke tests, and handoff status files.
 - CodexPro keeps a strict boundary: no model proxying, account pooling, third-party Pro site scraping, quota bypassing, or OS sandbox claims.
 
 CodexPro connects ChatGPT to a user-approved local repository over MCP. Repository access, command permissions, and change review remain explicit.
@@ -107,7 +107,7 @@ They solve different jobs.
 
 ChatGPT's web Agent is for browsing, web research, and general web tasks. By default it cannot open a local Git repo on your machine, read `AGENTS.md`, inspect your current branch/`git diff`, run local verification commands, or keep edits inside an allowed workspace.
 
-CodexPro is a local MCP bridge: your ChatGPT session talks to an approved folder on your computer through Developer Mode / Plugins. It does not replace the web Agent, bypass account limits, or turn ChatGPT into a remote shell service.
+CodexPro is a local MCP bridge: your ChatGPT session talks to an approved folder on your computer through Plugins. Developer mode is only the ChatGPT settings toggle that lets you create custom plugins. It does not replace the web Agent, bypass account limits, or turn ChatGPT into a remote shell service.
 
 Use the web Agent for web work. Use CodexPro when the source of truth is a local repository.
 
@@ -177,9 +177,9 @@ The useful part is that Codex and ChatGPT are different product surfaces. If one
 
 ## Can CodexPro use GPT-5.5?
 
-Only if your ChatGPT account already exposes that exact model, or a similar stronger model, in the ChatGPT web product surface you are using, and that model surface can call Developer Mode apps.
+Only if your ChatGPT account already exposes that exact model, or a similar stronger model, in the ChatGPT web product surface you are using, and that model surface can call custom MCP plugins.
 
-Some GPT-5.5 Pro or other model surfaces may not expose app actions in a given chat. If CodexPro actions are unavailable there, CodexPro cannot make that request reach the local server. CodexPro does not provide, proxy, resell, or unlock models. It gives compatible ChatGPT sessions local repo tools.
+Some GPT-5.5 Pro or other model surfaces may not expose plugin actions in a given chat. If CodexPro actions are unavailable there, CodexPro cannot make that request reach the local server. CodexPro does not provide, proxy, resell, or unlock models. It gives compatible ChatGPT sessions local repo tools.
 
 For models that cannot call tools, generate a repo context bundle instead:
 
@@ -305,7 +305,7 @@ Keep CodexPro running while testing. A Cloudflare quick-tunnel URL changes on
 every restart. If Cloudflare returns `530` / `Error 1033`, check DNS or
 proxy-client DNS handling on the machine running `cloudflared`.
 
-ChatGPT now manages development apps under Plugins. The browser error
+ChatGPT now manages custom MCP connections under Plugins. The browser error
 `Failed to execute 'removeChild' on 'Node'` occurs in the ChatGPT page, before
 CodexPro can handle an MCP request. Remove or recreate the stale plugin entry
 from the Plugins page, then retry with the current URL. CodexPro cannot repair
@@ -319,7 +319,7 @@ Official references:
 - Cloudflare Tunnel routing: https://developers.cloudflare.com/tunnel/routing/
 - Cloudflare Tunnel DNS records: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/routing-to-tunnel/dns/
 
-## Can I use the same ChatGPT app URL every day?
+## Can I use the same ChatGPT plugin URL every day?
 
 Yes, if you use a stable hostname.
 

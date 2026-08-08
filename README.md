@@ -180,3 +180,4 @@ npm run release:publish
 - [Security](SECURITY.md)
 - [Stable URL guide](DOMAIN_SETUP.md)
 - [Changelog](CHANGELOG.md)
+- [Contributors](CONTRIBUTORS.md)

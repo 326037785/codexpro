@@ -12,6 +12,12 @@
     "url": "https://github.com/rebel0789/codexpro/issues"
   },
   "homepage": "https://rebel0789.github.io/codexpro/",
+  "contributors": [
+    {
+      "name": "yuczzzzz",
+      "url": "https://github.com/yuczzzzz"
+    }
+  ],
   "keywords": [
     "mcp",
     "chatgpt",
@@ -44,6 +50,7 @@
     "LICENSE",
     "SECURITY.md",
     "CONTRIBUTING.md",
+    "CONTRIBUTORS.md",
     "FAQ.md",
     "FAQ_ZH.md",
     "CHANGELOG.md",

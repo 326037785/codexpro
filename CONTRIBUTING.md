@@ -40,7 +40,6 @@ npm run connect -- --root /path/to/test/repo --bash safe --write handoff
 - Run `npm run build`.
 - Run `npm run smoke`.
 - Update `README.md` or `CHANGELOG.md` when behavior changes.
-- Credit community authors in `CHANGELOG.md` and `CONTRIBUTORS.md` when a contribution is reimplemented instead of merged.
 - Explain security impact for changes touching auth, file access, shell execution, or tunnels.
 
 ## Docs Style

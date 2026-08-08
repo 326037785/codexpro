@@ -84,9 +84,15 @@ async function safeReaddir(dir: string): Promise<fs.Dirent[]> {
 
 function realpathOrUndefined(filePath: string): string | undefined {
   try {
-    return fs.realpathSync(filePath);
+    // Prefer native realpath so Windows short/8.3 names and junctions collapse
+    // to the same canonical spelling used for ~/ display matching.
+    return fs.realpathSync.native(filePath);
   } catch {
-    return undefined;
+    try {
+      return fs.realpathSync(filePath);
+    } catch {
+      return undefined;
+    }
   }
 }
 
@@ -101,16 +107,59 @@ function uniquePaths(paths: string[]): string[] {
   return out;
 }
 
+function stripWinLongPathPrefix(value: string): string {
+  return value.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/i, "");
+}
+
 function homePathCandidates(requestedHomeDir: string, homeDir: string): string[] {
   // Keep both the caller-supplied home and its realpath. On Windows, junction
   // targets often preserve the pre-realpath path form (for example long vs 8.3
-  // names), so classification and ~/ display must accept either spelling.
-  return uniquePaths([homeDir, path.resolve(requestedHomeDir)]);
+  // names), so ~/ display must accept either spelling.
+  const resolvedRequested = path.resolve(requestedHomeDir);
+  return uniquePaths(
+    [homeDir, resolvedRequested, realpathOrUndefined(resolvedRequested), realpathOrUndefined(homeDir)]
+      .filter((value): value is string => Boolean(value))
+      .map(stripWinLongPathPrefix)
+  );
 }
 
-function matchingHomeRoot(absPath: string, homes: string[]): string | undefined {
-  for (const home of homes) {
-    if (absPath === home || isSubpath(absPath, home)) return home;
+function samePath(left: string, right: string): boolean {
+  const a = stripWinLongPathPrefix(left);
+  const b = stripWinLongPathPrefix(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function homeRelativeDisplay(absPath: string, home: string): string | undefined {
+  const candidates: Array<[string, string]> = [[absPath, home]];
+  const realAbs = realpathOrUndefined(absPath);
+  const realHome = realpathOrUndefined(home);
+  if (realAbs && realHome) candidates.push([realAbs, realHome]);
+  if (realAbs) candidates.push([realAbs, home]);
+  if (realHome) candidates.push([absPath, realHome]);
+
+  for (const [child, parent] of candidates) {
+    const normalizedChild = stripWinLongPathPrefix(child);
+    const normalizedParent = stripWinLongPathPrefix(parent);
+    if (samePath(normalizedChild, normalizedParent)) return "~";
+    if (isSubpath(normalizedChild, normalizedParent)) {
+      return `~/${path.relative(normalizedParent, normalizedChild).split(path.sep).join("/")}`;
+    }
+  }
+
+  // Windows short vs long path spellings can make path.relative walk through "..".
+  // Walk ancestors of absPath until a realpath matches home's realpath.
+  if (!realHome) return undefined;
+  let current = path.resolve(absPath);
+  const trail: string[] = [];
+  while (true) {
+    const realCurrent = realpathOrUndefined(current);
+    if (realCurrent && samePath(realCurrent, realHome)) {
+      return trail.length === 0 ? "~" : `~/${trail.reverse().join("/")}`;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    trail.push(path.basename(current).split(path.sep).join("/"));
+    current = parent;
   }
   return undefined;
 }
@@ -121,10 +170,9 @@ function displayPath(absPath: string, workspaceRoot: string, homes: string | str
     if (absPath === workspaceRoot) return "$WORKSPACE";
     return `$WORKSPACE/${path.relative(workspaceRoot, absPath).split(path.sep).join("/")}`;
   }
-  const home = matchingHomeRoot(absPath, homeList);
-  if (home) {
-    if (absPath === home) return "~";
-    return `~/${path.relative(home, absPath).split(path.sep).join("/")}`;
+  for (const home of homeList) {
+    const relative = homeRelativeDisplay(absPath, home);
+    if (relative) return relative;
   }
   return absPath;
 }
@@ -195,8 +243,8 @@ async function findSkillFiles(
     }
     if (entry.isSymbolicLink()) {
       try {
-        const target = await fsp.realpath(abs);
-        if ((await fsp.stat(target)).isDirectory()) {
+        const target = realpathOrUndefined(abs);
+        if (target && (await fsp.stat(target)).isDirectory()) {
           await findSkillFiles(target, maxDepth - 1, out, maxItems, precedence, source);
         }
       } catch {

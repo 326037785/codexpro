@@ -25,8 +25,10 @@ function onlySkill(inventory, name) {
   return matches[0];
 }
 
-const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-skill-workspace-'));
-const homeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-skill-home-'));
+const workspaceRootRaw = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-skill-workspace-'));
+const homeRootRaw = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-skill-home-'));
+const workspaceRoot = await fs.realpath(workspaceRootRaw);
+const homeRoot = await fs.realpath(homeRootRaw);
 
 try {
   await writeSkill(workspaceRoot, path.join('.codex', 'skills', 'smoke-skill'), 'smoke-skill', 'Preferred workspace skill.', 'Workspace Codex Skill');
@@ -37,10 +39,11 @@ try {
   await writeSkill(homeRoot, path.join('.codex', 'plugins', 'cache', 'test-plugin-a', '1.0.0', 'skills', 'global-smoke-skill'), 'global-smoke-skill', 'Suppressed plugin global duplicate.', 'Plugin Global Duplicate');
   await writeSkill(homeRoot, path.join('.codex', 'plugins', 'cache', 'test-plugin-a', '1.0.0', 'skills', 'plugin-only-skill'), 'plugin-only-skill', 'First plugin copy.', 'Plugin First Copy');
   await writeSkill(homeRoot, path.join('.codex', 'plugins', 'cache', 'test-plugin-b', '2.0.0', 'skills', 'plugin-only-skill'), 'plugin-only-skill', 'Second plugin copy.', 'Plugin Second Copy');
-  const linkedSkillDir = path.join(homeRoot, '.cc-switch', 'skills', 'linked-skill');
   await writeSkill(homeRoot, path.join('.cc-switch', 'skills', 'linked-skill'), 'linked-skill', 'Symlinked user skill.', 'Symlinked User Skill');
+  // Point the junction at the pre-realpath home spelling when it differs so
+  // Windows short/long path mismatches are exercised end-to-end.
   await fs.symlink(
-    linkedSkillDir,
+    path.join(homeRootRaw, '.cc-switch', 'skills', 'linked-skill'),
     path.join(homeRoot, '.codex', 'skills', 'linked-skill'),
     process.platform === 'win32' ? 'junction' : 'dir'
   );
@@ -50,7 +53,7 @@ try {
     root: workspaceRoot,
     openedAt: new Date().toISOString()
   };
-  const discoveryOptions = { includeGlobal: true, maxSkills: 50, homeDir: homeRoot };
+  const discoveryOptions = { includeGlobal: true, maxSkills: 50, homeDir: homeRootRaw };
   const inventory = await discoverSkillInventory(workspace, discoveryOptions);
 
   const workspaceWinner = onlySkill(inventory, 'smoke-skill');

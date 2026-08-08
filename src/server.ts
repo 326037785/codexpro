@@ -926,7 +926,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
   const workspaces = new WorkspaceManager(config);
   const reviewCheckpoints = new Map<string, string>();
   const guard = new PathGuard(config);
-  const server = new McpServer({ name: "CodexPro", version: "0.29.0" }, { instructions: serverInstructions(config) });
+  const server = new McpServer({ name: "CodexPro", version: "0.30.0" }, { instructions: serverInstructions(config) });
   registeredToolNamesByServer.set(server as object, []);
   registerToolCardResource(server, config);
 
@@ -1964,7 +1964,13 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         command: z.string().describe("Command to run."),
         session_id: z.string().optional().describe(config.requireBashSession && config.bashSessionId ? `Required bash session id for this server: ${config.bashSessionId}.` : "Optional bash session id. If configured on the server, a provided value must match it."),
         cwd: z.string().optional().describe("Working directory relative to workspace root. Default: ."),
-        timeout_ms: z.number().int().min(1000).max(180000).optional().describe("Timeout in milliseconds. Default: 30000.")
+        timeout_ms: z
+          .number()
+          .int()
+          .min(1000)
+          .max(config.maxBashTimeoutMs)
+          .optional()
+          .describe(`Timeout in milliseconds. Default: 30000. Max: ${config.maxBashTimeoutMs}.`)
       },
       annotations: BASH_ANNOTATIONS,
       _meta: {

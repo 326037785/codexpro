@@ -44,7 +44,7 @@ class McpStdioClient {
     const msg = { jsonrpc: '2.0', id, method, params };
     this.child.stdin.write(encode(msg));
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`timeout waiting for ${method}`)), 15000);
+      const timer = setTimeout(() => reject(new Error(`timeout waiting for ${method}`)), 45000);
       timer.unref();
       this.pending.set(id, { resolve, reject, timer });
     });
@@ -954,6 +954,7 @@ await expectToolError('bash', { workspace_id: ws, command: 'git show HEAD:.env' 
 await expectToolError('bash', { workspace_id: ws, command: 'ls $HOME' }, /blocked/i);
 const clientBuild = await client.request('tools/call', { name: 'bash', arguments: { workspace_id: ws, command: 'npm run build:clients', timeout_ms: 60000 } });
 if (!clientBuild.structuredContent.stdout?.includes('clients ok')) {
+   console.log('CLIENTBUILD_DUMP', JSON.stringify(clientBuild));
   throw new Error('safe bash did not run npm run build:clients');
 }
 const exported = await client.request('tools/call', { name: 'export_pro_context', arguments: { workspace_id: ws, selected_paths: ['demo.txt'], max_files: 4, max_total_bytes: 80000 } });

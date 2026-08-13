@@ -222,6 +222,7 @@ export function makeRestrictedBashEnv(
     const localAppData = isUsableAbsoluteDir(env.LOCALAPPDATA);
     if (appData) restricted.APPDATA = appData;
     if (localAppData) restricted.LOCALAPPDATA = localAppData;
+    if (env.PATHEXT) restricted.PATHEXT = env.PATHEXT;
     if (env.USERNAME) restricted.USERNAME = env.USERNAME;
     if (env.HOMEDRIVE && env.HOMEPATH && path.win32.isAbsolute(path.win32.join(env.HOMEDRIVE, env.HOMEPATH))) {
       restricted.HOMEDRIVE = env.HOMEDRIVE;
@@ -244,6 +245,28 @@ function trimOutput(value: string, maxBytes: number): { value: string; truncated
   if (buffer.byteLength <= maxBytes) return { value, truncated: false };
   const sliced = buffer.subarray(0, maxBytes).toString("utf8");
   return { value: `${sliced}\n...[output truncated to ${maxBytes} bytes]`, truncated: true };
+}
+
+export function decodeCommandOutput(buffer: Buffer): string {
+  if (buffer.length === 0) return "";
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return buffer.subarray(2).toString("utf16le");
+  }
+
+  const sampleLength = Math.min(buffer.length - (buffer.length % 2), 512);
+  const pairCount = sampleLength / 2;
+  if (pairCount >= 2) {
+    let oddNulls = 0;
+    let evenNulls = 0;
+    for (let i = 0; i < sampleLength; i += 2) {
+      if (buffer[i] === 0) evenNulls += 1;
+      if (buffer[i + 1] === 0) oddNulls += 1;
+    }
+    if (oddNulls / pairCount >= 0.3 && evenNulls / pairCount < 0.1) {
+      return buffer.subarray(0, buffer.length - (buffer.length % 2)).toString("utf16le");
+    }
+  }
+  return buffer.toString("utf8");
 }
 
 function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -309,11 +332,11 @@ export async function runBash(
       killTimer.unref();
     };
     const appendBounded = (current: string, chunk: unknown) => {
-      const bytes = Buffer.from(String(chunk), "utf8");
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
       observedOutputBytes += bytes.byteLength;
       const remaining = retainedOutputBytes - Buffer.byteLength(stdout, "utf8") - Buffer.byteLength(stderr, "utf8");
       if (remaining <= 0) return current;
-      return current + bytes.subarray(0, remaining).toString("utf8");
+      return current + decodeCommandOutput(bytes.subarray(0, remaining));
     };
 
     const timer = setTimeout(() => {

@@ -397,6 +397,16 @@ export async function writeTextFile(
   }
 }
 
+function normalizeEditSnippetLineEndings(value: string, fileText: string): string {
+  const crlfCount = (fileText.match(/\r\n/g) ?? []).length;
+  const withoutCrlf = fileText.replaceAll("\r\n", "");
+  const lfCount = (withoutCrlf.match(/\n/g) ?? []).length;
+  const crCount = (withoutCrlf.match(/\r/g) ?? []).length;
+  if (crlfCount === 0 && lfCount === 0 && crCount === 0) return value;
+  const eol = crlfCount >= lfCount && crlfCount >= crCount ? "\r\n" : lfCount >= crCount ? "\n" : "\r";
+  return value.replace(/\r\n|\r|\n/g, eol);
+}
+
 export async function editTextFile(
   config: CodexProConfig,
   guard: PathGuard,
@@ -413,7 +423,9 @@ export async function editTextFile(
     await guard.assertTextFile(resolved.absPath, Math.max(config.maxWriteBytes, config.maxReadBytes));
     const before = await fsp.readFile(resolved.absPath, "utf8");
     assertExpectedSha(options.expectedSha256, before, resolved.relPath);
-    const occurrences = before.split(oldText).length - 1;
+    const matchText = normalizeEditSnippetLineEndings(oldText, before);
+    const replacementText = normalizeEditSnippetLineEndings(newText, before);
+    const occurrences = before.split(matchText).length - 1;
     if (occurrences === 0) {
       throw new CodexProError(`old_text was not found in ${resolved.relPath}. Read the file and retry with an exact snippet.`);
     }
@@ -421,13 +433,13 @@ export async function editTextFile(
     let replacements: number;
     let after: string;
     if (options.replaceAll) {
-      after = before.split(oldText).join(newText);
+      after = before.split(matchText).join(replacementText);
       replacements = occurrences;
     } else {
       if (occurrences !== 1) {
         throw new CodexProError(`old_text matched ${occurrences} times. Provide a more specific old_text or set replace_all=true.`);
       }
-      after = before.replace(oldText, newText);
+      after = before.replace(matchText, replacementText);
       replacements = 1;
     }
 

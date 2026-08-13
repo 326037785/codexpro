@@ -20,6 +20,7 @@ import {
 } from "./profileStore.js";
 import { redactSensitiveText, redactStructured } from "./redact.js";
 import { createCodexProServer } from "./server.js";
+import type { Workspace } from "./guard.js";
 
 function escapeHtml(value: unknown): string {
   return String(value ?? "")
@@ -1454,6 +1455,7 @@ async function main(): Promise<void> {
   }
 
   const app = express();
+  const sharedWorkspaceHandles = new Map<string, Workspace>();
   const logRequests = process.env.CODEXPRO_LOG_REQUESTS === "1";
   const authFailureWindow = new Map<string, { count: number; resetAt: number }>();
   const authFailureLimit = 10;
@@ -1699,7 +1701,7 @@ async function main(): Promise<void> {
           if (closedSessionId) transports.delete(closedSessionId);
         };
 
-        const server = createCodexProServer(config);
+        const server = createCodexProServer(config, { sharedWorkspaceHandles });
         await server.connect(transport);
       } else {
         sendSessionError(res, sessionId);

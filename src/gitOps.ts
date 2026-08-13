@@ -1,12 +1,14 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import type { CodexProConfig } from "./config.js";
 import type { Workspace } from "./guard.js";
-import { CodexProError, PathGuard } from "./guard.js";
+import { CodexProError, PathGuard, isSubpath } from "./guard.js";
 import { redactSensitiveText } from "./redact.js";
 
-function runGit(workspace: Workspace, args: string[], maxOutputBytes: number): string {
+function runGit(workspace: Workspace, args: string[], maxOutputBytes: number, cwd = workspace.root): string {
   const result = spawnSync("git", args, {
-    cwd: workspace.root,
+    cwd,
     encoding: "utf8",
     maxBuffer: maxOutputBytes,
     env: { ...process.env, NO_COLOR: "1" }
@@ -20,6 +22,30 @@ function runGit(workspace: Workspace, args: string[], maxOutputBytes: number): s
     return stderr || stdout || `git exited with status ${result.status}`;
   }
   return redactSensitiveText(result.stdout.trim() || "(no output)");
+}
+
+function nearestGitRoot(workspace: Workspace, targetPath: string): string {
+  let current = targetPath;
+  try {
+    if (!fs.statSync(current).isDirectory()) current = path.dirname(current);
+  } catch {
+    current = path.dirname(current);
+  }
+
+  while (isSubpath(current, workspace.root)) {
+    if (fs.existsSync(path.join(current, ".git"))) return current;
+    if (path.resolve(current) === path.resolve(workspace.root)) break;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return workspace.root;
+}
+
+function scopedGitTarget(workspace: Workspace, guard: PathGuard, filePath: string): { cwd: string; relPath: string } {
+  const resolved = guard.resolve(workspace, filePath);
+  const cwd = nearestGitRoot(workspace, resolved.absPath);
+  return { cwd, relPath: path.relative(cwd, resolved.absPath) || "." };
 }
 
 function isGitFailure(output: string): boolean {
@@ -40,36 +66,42 @@ function outputLines(output: string): string[] {
 
 export function gitStatus(config: CodexProConfig, workspace: Workspace, guard?: PathGuard, filePath?: string, staged = false): string {
   const args = staged ? ["diff", "--cached", "--name-status"] : ["status", "--short", "--branch"];
+  let cwd = workspace.root;
   if (filePath?.trim()) {
     if (!guard) return "path-scoped git status requires a path guard";
-    const resolved = guard.resolve(workspace, filePath);
-    args.push("--", resolved.relPath);
+    const scoped = scopedGitTarget(workspace, guard, filePath);
+    cwd = scoped.cwd;
+    args.push("--", scoped.relPath);
   }
-  return runGit(workspace, args, config.maxOutputBytes);
+  return runGit(workspace, args, config.maxOutputBytes, cwd);
 }
 
 export function gitDiff(config: CodexProConfig, guard: PathGuard, workspace: Workspace, filePath?: string, staged = false): string {
   const args = ["diff", "--no-color", "--no-ext-diff", "--no-textconv"];
   if (staged) args.push("--staged");
+  let cwd = workspace.root;
   if (filePath?.trim()) {
-    const resolved = guard.resolve(workspace, filePath);
-    args.push("--", resolved.relPath);
+    const scoped = scopedGitTarget(workspace, guard, filePath);
+    cwd = scoped.cwd;
+    args.push("--", scoped.relPath);
   }
-  return runGit(workspace, args, config.maxOutputBytes);
+  return runGit(workspace, args, config.maxOutputBytes, cwd);
 }
 
 export function gitDiffStatus(config: CodexProConfig, guard: PathGuard, workspace: Workspace, filePath?: string, staged = false): string {
   const args = ["diff", "--name-status"];
   if (staged) args.push("--staged");
   const untrackedArgs = ["ls-files", "--others", "--exclude-standard"];
+  let cwd = workspace.root;
   if (filePath?.trim()) {
-    const resolved = guard.resolve(workspace, filePath);
-    args.push("--", resolved.relPath);
-    untrackedArgs.push("--", resolved.relPath);
+    const scoped = scopedGitTarget(workspace, guard, filePath);
+    cwd = scoped.cwd;
+    args.push("--", scoped.relPath);
+    untrackedArgs.push("--", scoped.relPath);
   }
-  const diffStatus = runGit(workspace, args, config.maxOutputBytes);
+  const diffStatus = runGit(workspace, args, config.maxOutputBytes, cwd);
   if (staged || isGitFailure(diffStatus)) return diffStatus;
-  const untracked = runGit(workspace, untrackedArgs, config.maxOutputBytes);
+  const untracked = runGit(workspace, untrackedArgs, config.maxOutputBytes, cwd);
   if (isGitFailure(untracked)) return diffStatus;
   const lines = [...outputLines(diffStatus), ...outputLines(untracked).map((line) => `?? ${line}`)];
   return lines.length ? lines.join("\n") : "(no output)";

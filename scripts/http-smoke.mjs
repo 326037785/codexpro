@@ -685,6 +685,20 @@ try {
       ) {
         throw new Error(`HTTP workspace selection leaked between MCP sessions: ${JSON.stringify(secondList.structuredContent)}`);
       }
+      const sharedSnapshot = await callTool(secondClient, 'workspace_snapshot', {
+        workspace_id: alternate.structuredContent.workspace_id,
+        max_depth: 1
+      });
+      if (sharedSnapshot.structuredContent.workspace_id !== alternate.structuredContent.workspace_id) {
+        throw new Error(`HTTP explicit workspace handle did not survive transport session change: ${JSON.stringify(sharedSnapshot.structuredContent)}`);
+      }
+      const secondListAfterLookup = await callTool(secondClient, 'list_workspaces');
+      if (
+        secondListAfterLookup.structuredContent.selected_workspace_id === alternate.structuredContent.workspace_id
+        || secondListAfterLookup.structuredContent.workspaces.some((workspace) => workspace.root === alternateRoot)
+      ) {
+        throw new Error(`HTTP explicit shared handle polluted session-local workspace state: ${JSON.stringify(secondListAfterLookup.structuredContent)}`);
+      }
     });
 
     const firstList = await callTool(firstClient, 'list_workspaces');
@@ -694,25 +708,27 @@ try {
   });
 
   await withClient(mcpUrl, async (client) => {
+    const sessionOpenedResult = await callTool(client, 'open_workspace', { root, include_tree: false });
+    const sessionOpened = sessionOpenedResult.structuredContent.workspace_id;
     const list = await callTool(client, 'list_workspaces');
     const ids = list.structuredContent.workspaces.map((workspace) => workspace.id);
-    if (!ids.includes(opened)) {
-      throw new Error(`session list_workspaces missing configured workspace ${opened}; got ${ids.join(', ')}`);
+    if (!ids.includes(sessionOpened)) {
+      throw new Error(`session list_workspaces missing opened workspace ${sessionOpened}; got ${ids.join(', ')}`);
     }
 
-    const snapshot = await callTool(client, 'workspace_snapshot', { workspace_id: opened, max_depth: 1 });
-    if (snapshot.structuredContent.workspace_id !== opened) {
-      throw new Error(`workspace_snapshot returned ${snapshot.structuredContent.workspace_id}, expected ${opened}`);
+    const snapshot = await callTool(client, 'workspace_snapshot', { workspace_id: sessionOpened, max_depth: 1 });
+    if (snapshot.structuredContent.workspace_id !== sessionOpened) {
+      throw new Error(`workspace_snapshot returned ${snapshot.structuredContent.workspace_id}, expected ${sessionOpened}`);
     }
 
-    const tree = await callTool(client, 'tree', { workspace_id: opened, max_depth: 1, max_entries: 10 });
-    if (tree.structuredContent.workspace_id !== opened) {
-      throw new Error(`tree returned ${tree.structuredContent.workspace_id}, expected ${opened}`);
+    const tree = await callTool(client, 'tree', { workspace_id: sessionOpened, max_depth: 1, max_entries: 10 });
+    if (tree.structuredContent.workspace_id !== sessionOpened) {
+      throw new Error(`tree returned ${tree.structuredContent.workspace_id}, expected ${sessionOpened}`);
     }
 
-    const codexContext = await callTool(client, 'codex_context', { workspace_id: opened });
-    if (codexContext.structuredContent.workspace_id !== opened) {
-      throw new Error(`codex_context returned ${codexContext.structuredContent.workspace_id}, expected ${opened}`);
+    const codexContext = await callTool(client, 'codex_context', { workspace_id: sessionOpened });
+    if (codexContext.structuredContent.workspace_id !== sessionOpened) {
+      throw new Error(`codex_context returned ${codexContext.structuredContent.workspace_id}, expected ${sessionOpened}`);
     }
   });
 
@@ -724,8 +740,9 @@ try {
   }
 
   await withClient(mcpUrl, async (client) => {
+    const sessionOpenedResult = await callTool(client, 'open_workspace', { root, include_tree: false });
     const exported = await callTool(client, 'export_pro_context', {
-      workspace_id: opened,
+      workspace_id: sessionOpenedResult.structuredContent.workspace_id,
       max_files: 4,
       max_total_bytes: 80000
     });

@@ -680,10 +680,15 @@ try {
     await withClient(mcpUrl, async (secondClient) => {
       const secondList = await callTool(secondClient, 'list_workspaces');
       if (
-        secondList.structuredContent.selected_workspace_id === alternate.structuredContent.workspace_id
-        || secondList.structuredContent.workspaces.some((workspace) => workspace.root === alternateRoot)
+        secondList.structuredContent.selected_workspace_id !== alternate.structuredContent.workspace_id
+        || !secondList.structuredContent.workspaces.some((workspace) => workspace.root === alternateRoot)
       ) {
-        throw new Error(`HTTP workspace selection leaked between MCP sessions: ${JSON.stringify(secondList.structuredContent)}`);
+        throw new Error(`HTTP workspace selection did not survive a transport session change: ${JSON.stringify(secondList.structuredContent)}`);
+      }
+      const inheritedRead = await callTool(secondClient, 'read', { path: 'selected.txt' });
+      const inheritedText = inheritedRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
+      if (!inheritedText.includes('http alternate workspace')) {
+        throw new Error(`HTTP inherited workspace selection did not drive an omitted-id read: ${inheritedText}`);
       }
       const sharedSnapshot = await callTool(secondClient, 'workspace_snapshot', {
         workspace_id: alternate.structuredContent.workspace_id,
@@ -691,13 +696,6 @@ try {
       });
       if (sharedSnapshot.structuredContent.workspace_id !== alternate.structuredContent.workspace_id) {
         throw new Error(`HTTP explicit workspace handle did not survive transport session change: ${JSON.stringify(sharedSnapshot.structuredContent)}`);
-      }
-      const secondListAfterLookup = await callTool(secondClient, 'list_workspaces');
-      if (
-        secondListAfterLookup.structuredContent.selected_workspace_id === alternate.structuredContent.workspace_id
-        || secondListAfterLookup.structuredContent.workspaces.some((workspace) => workspace.root === alternateRoot)
-      ) {
-        throw new Error(`HTTP explicit shared handle polluted session-local workspace state: ${JSON.stringify(secondListAfterLookup.structuredContent)}`);
       }
     });
 

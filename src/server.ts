@@ -473,34 +473,36 @@ function registerCodexTool(
 function serverInstructions(config: CodexProConfig): string {
   const editInstruction =
     config.connectionTest
-      ? "4. Connection test mode is read-only. Write, patch, export, and handoff-writing tools are unavailable."
+      ? "6. Connection test mode is read-only. Write, patch, export, and handoff-writing tools are unavailable."
       : config.writeMode === "workspace"
-      ? "4. Edit source files with write/edit/apply_patch. After edits, call show_changes once for git status, diff stats, and review diff."
+      ? "6. Edit source files with write/edit/apply_patch. After edits, call show_changes once for git status, diff stats, and review diff."
       : config.writeMode === "handoff"
-        ? "4. Source writes are disabled and generic write/edit/apply_patch tools are unavailable. Use handoff_to_agent/handoff_to_codex for plans."
-        : "4. Write/edit/apply_patch tools are disabled. Do not attempt direct file writes; use handoff or context export workflows instead.";
+        ? "6. Source writes are disabled and generic write/edit/apply_patch tools are unavailable. Use handoff_to_agent/handoff_to_codex for plans."
+        : "6. Write/edit/apply_patch tools are disabled. Do not attempt direct file writes; use handoff or context export workflows instead.";
   const bashInstruction =
     config.bashMode === "off"
-      ? "5. Bash is disabled and the bash tool is unavailable. Do not attempt shell commands."
-      : "5. Use bash only for meaningful verification commands such as npm test, npm run build, lint, typecheck, or an existing project script.";
+      ? "7. Bash is disabled and the bash tool is unavailable. Do not attempt shell commands."
+      : "7. Use bash only for meaningful verification commands such as npm test, npm run build, lint, typecheck, or an existing project script.";
 
   return [
     "CodexPro connects ChatGPT to explicitly allowed local development workspaces.",
     "",
     "Preferred workflow:",
-    "1. Start with open_current_workspace. Use open_workspace only when the user gives a different allowed root or asks to switch projects; that selection stays active for this MCP session.",
+    "1. Start with open_current_workspace. Use open_workspace only when the user gives a different allowed root or asks to switch projects; HTTP bridge calls preserve the last explicit selection across short-lived transport sessions.",
     "2. Follow any AGENTS.md-style instructions returned by the workspace open call before editing files.",
-    "3. Inspect with tree, search, and read. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
+    "3. Use progressive retrieval: start from the user-named target with a shallow tree or targeted search, read only the files needed for the current decision, and expand to dependencies/tests/docs only when the task requires it. Do not build a repository-wide model by default.",
+    "4. Use inspect_workspace only for explicit repository/area architecture analysis or when targeted navigation is insufficient. Prefer a scoped path when using it.",
+    "5. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
     editInstruction,
     bashInstruction,
-    "6. Keep tool calls minimal. Prefer one targeted search plus show_changes instead of repeated broad inspection calls.",
+    "8. Keep tool calls minimal. Prefer one targeted search plus show_changes instead of repeated broad inspection calls.",
     config.codexSessions !== "off"
-      ? `7. Codex session history access is enabled in ${config.codexSessions} mode. Use it only when the user asks for local Codex session history.`
+      ? `9. Codex session history access is enabled in ${config.codexSessions} mode. Use it only when the user asks for local Codex session history.`
       : "",
     config.requireBashSession && config.bashSessionId
-      ? `8. Bash session guard is enabled. Every bash call must include session_id="${config.bashSessionId}".`
+      ? `10. Bash session guard is enabled. Every bash call must include session_id="${config.bashSessionId}".`
       : config.bashSessionId
-        ? `8. Bash session label for this server is "${config.bashSessionId}".`
+        ? `10. Bash session label for this server is "${config.bashSessionId}".`
         : "",
     "",
     `Current modes: tool=${config.toolMode}, bash=${config.bashMode}, write=${config.writeMode}.`
@@ -928,9 +930,12 @@ const HANDOFF_WRITE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: false, d
 
 export function createCodexProServer(
   config: CodexProConfig,
-  options: { sharedWorkspaceHandles?: Map<string, Workspace> } = {}
+  options: {
+    sharedWorkspaceHandles?: Map<string, Workspace>;
+    sharedSelection?: { selectedWorkspaceId?: string };
+  } = {}
 ): McpServer {
-  const workspaces = new WorkspaceManager(config, options.sharedWorkspaceHandles);
+  const workspaces = new WorkspaceManager(config, options.sharedWorkspaceHandles, options.sharedSelection);
   const reviewCheckpoints = new Map<string, string>();
   const guard = new PathGuard(config);
   const server = new McpServer({ name: "CodexPro", version: "0.30.0" }, { instructions: serverInstructions(config) });
@@ -1399,7 +1404,7 @@ export function createCodexProServer(
     "list_workspaces",
     {
       title: "List Workspaces",
-      description: "List workspaces opened in this MCP session and identify the currently selected workspace.",
+      description: "List workspaces available to this CodexPro bridge and identify the currently selected workspace.",
       inputSchema: {},
       annotations: READ_ONLY_ANNOTATIONS,
       _meta: {
@@ -1429,7 +1434,7 @@ export function createCodexProServer(
     {
       title: "Open Current Workspace",
       description:
-        "Open and select the configured default workspace for this MCP session. Use this to return to the launch workspace after switching roots.",
+        "Open and select the configured default workspace. Use this to return the CodexPro bridge to the launch workspace after switching roots.",
       inputSchema: {
         include_tree: z.boolean().optional().describe("Include a compact file tree. Default: false for speed."),
         max_depth: z.number().int().min(1).max(8).optional().describe("Tree depth when include_tree=true. Default: 2."),
@@ -1477,11 +1482,11 @@ export function createCodexProServer(
     {
       title: "Open Workspace",
       description:
-        "Open and select an allowed local project for this MCP session. Later tool calls may omit workspace_id to use this selection.",
+        "Open and select an allowed local project. HTTP bridge calls preserve this selection across short-lived transport sessions, so later tool calls may omit workspace_id.",
       inputSchema: {
         root: z.string().optional().describe("Project directory to open. Omit to use CODEXPRO_ROOT/current working directory. Supports ~/ paths."),
         path: z.string().optional().describe("Alias for root. Useful for clients that naturally send path instead of root."),
-        include_tree: z.boolean().optional().describe("Include a compact file tree. Default: true."),
+        include_tree: z.boolean().optional().describe("Include a compact file tree. Default: false; prefer targeted tree/search after opening."),
         max_depth: z.number().int().min(1).max(8).optional().describe("Tree depth. Default: 3."),
         max_files: z.number().int().min(1).max(3000).optional().describe("Alias for maximum tree entries. Default: 500."),
         include_skills: z.boolean().optional().describe("Discover skills by name/description. Default: false for speed."),
@@ -1501,7 +1506,7 @@ export function createCodexProServer(
       }
       const workspace = workspaces.openWorkspace(args.root ?? args.path);
       const summary = await workspaceSummary(config, guard, workspace, {
-        includeTree: args.include_tree !== false,
+        includeTree: args.include_tree === true,
         maxDepth: limitInt(args.max_depth, 3, 1, 8),
         maxEntries: limitInt(args.max_files, 500, 1, 3000),
         includeSkills: parseBool(args.include_skills, false),
@@ -1582,10 +1587,10 @@ export function createCodexProServer(
     "inspect_workspace",
     {
       title: "Inspect Workspace",
-      description: "Build a bounded repository map with languages, project types, entrypoints, areas, symbols, relationships, and coverage warnings.",
+      description: "Build a bounded repository or scoped-area map with languages, project types, entrypoints, symbols, and relationships. This is a heavyweight analysis tool; prefer targeted tree/search/read for ordinary tasks and pass path when only one area is needed.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
-        path: z.string().optional().describe("Optional workspace-relative area to emphasize. Default: entire workspace."),
+        path: z.string().optional().describe("Optional workspace-relative file or directory to analyze. When set, inventory and extraction are scoped to this path instead of scanning the entire workspace."),
         max_files: z.number().int().min(1).max(100000).optional().describe("Maximum returned file records. Default: 300."),
         include_symbols: z.boolean().optional().describe("Include symbols in structured output. Default: true."),
         include_relationships: z.boolean().optional().describe("Include relationships in structured output. Default: true."),
@@ -1602,7 +1607,7 @@ export function createCodexProServer(
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
       if (args.path) guard.resolve(workspace, args.path);
-      const result = await inspectWorkspace(config, guard, workspace);
+      const result = await inspectWorkspace(config, guard, workspace, { root: args.path });
       const prefix = typeof args.path === "string" && args.path.trim()
         ? guard.resolve(workspace, args.path).relPath.replace(/^\.\/?$/, "")
         : "";
@@ -1710,8 +1715,8 @@ export function createCodexProServer(
         glob: z.string().optional().describe("Optional glob, for example src/**/*.ts."),
         include_hidden: z.boolean().optional().describe("Include hidden files that are not blocked. Default: false."),
         max_results: z.number().int().min(1).max(2000).optional().describe("Maximum results. Default from config."),
-        intent: z.enum(["auto", "text", "symbol", "references", "impact"]).optional().describe("Optional structured search intent. Omit for legacy lexical behavior."),
-        symbol: z.string().optional().describe("Optional symbol query. Uses repository analysis and overrides query text."),
+        intent: z.enum(["auto", "text", "symbol", "references", "impact"]).optional().describe("Optional structured search intent. This triggers repository analysis scoped by path; omit it for the fast lexical path."),
+        symbol: z.string().optional().describe("Optional symbol query. Triggers repository analysis scoped by path and overrides query text."),
         include_tests: z.boolean().optional().describe("Include related tests in structured results. Default: false.")
       },
       annotations: READ_ONLY_ANNOTATIONS,
@@ -1785,23 +1790,36 @@ export function createCodexProServer(
     "view_image",
     {
       title: "View Image",
-      description: "Inspect a PNG, JPEG, GIF, or WebP image from the active workspace. Returns native MCP image content plus dimensions and SHA-256.",
+      description: "Inspect a PNG, JPEG, GIF, or WebP image. Preview mode is the default: oversized or high-resolution source images are automatically converted to a bounded WebP preview while preserving original metadata.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().describe("Image path relative to workspace root."),
-        max_bytes: z.number().int().min(4096).max(2000000).optional().describe("Maximum image bytes. Default: at least 1 MB, capped at 2 MB.")
+        mode: z.enum(["preview", "original"]).optional().describe("preview (default) automatically bounds transfer size/resolution; original returns the source bytes unchanged and may fail if they exceed max_bytes."),
+        max_bytes: z.number().int().min(4096).max(2000000).optional().describe("Maximum returned image bytes. Preview default is bounded below 1 MB; hard cap is 2 MB."),
+        max_dimension: z.number().int().min(256).max(4096).optional().describe("Maximum preview width/height in pixels. Default: 1600. Ignored in original mode.")
       },
       annotations: READ_ONLY_ANNOTATIONS
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
-      const result = await viewWorkspaceImage(config, guard, workspace, args.path, args.max_bytes);
+      const result = await viewWorkspaceImage(config, guard, workspace, args.path, {
+        mode: args.mode,
+        maxBytes: args.max_bytes,
+        maxDimension: args.max_dimension
+      });
       const dimensions = result.width && result.height ? `${result.width}x${result.height}` : "unknown";
+      const originalDimensions = result.originalWidth && result.originalHeight ? `${result.originalWidth}x${result.originalHeight}` : "unknown";
       return {
         content: [
           {
             type: "text",
-            text: `Image: ${result.path}\nType: ${result.mimeType}\nDimensions: ${dimensions}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}`
+            text: [
+              `Image: ${result.path}`,
+              `Returned: ${result.mimeType} ${dimensions}, ${result.bytes} bytes${result.previewed ? " (preview)" : " (original)"}`,
+              `Source: ${result.originalMimeType} ${originalDimensions}, ${result.originalBytes} bytes`,
+              `SHA-256: ${result.sha256}`,
+              ...(result.previewed ? [`Preview SHA-256: ${result.previewSha256}`] : [])
+            ].join("\n")
           },
           { type: "image", data: result.data, mimeType: result.mimeType }
         ],
@@ -1813,7 +1831,13 @@ export function createCodexProServer(
           width: result.width ?? null,
           height: result.height ?? null,
           bytes: result.bytes,
-          sha256: result.sha256
+          sha256: result.sha256,
+          previewed: result.previewed,
+          preview_sha256: result.previewSha256,
+          original_mime_type: result.originalMimeType,
+          original_width: result.originalWidth ?? null,
+          original_height: result.originalHeight ?? null,
+          original_bytes: result.originalBytes
         })
       };
     }

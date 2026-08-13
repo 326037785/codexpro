@@ -1,8 +1,11 @@
-import fsp from "node:fs/promises";
 import { createHash } from "node:crypto";
+import fsp from "node:fs/promises";
+import sharp from "sharp";
 import type { CodexProConfig } from "./config.js";
 import type { Workspace } from "./guard.js";
 import { CodexProError, PathGuard } from "./guard.js";
+
+export type ImageViewMode = "preview" | "original";
 
 export interface WorkspaceImage {
   path: string;
@@ -12,7 +15,18 @@ export interface WorkspaceImage {
   bytes: number;
   sha256: string;
   data: string;
+  previewed: boolean;
+  originalMimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  originalWidth?: number;
+  originalHeight?: number;
+  originalBytes: number;
+  previewSha256: string;
 }
+
+const MAX_SOURCE_IMAGE_BYTES = 64_000_000;
+const DEFAULT_PREVIEW_BYTES = 900_000;
+const DEFAULT_PREVIEW_DIMENSION = 1600;
+const MAX_INPUT_PIXELS = 100_000_000;
 
 function jpegDimensions(buffer: Buffer): { width?: number; height?: number } {
   let offset = 2;
@@ -63,27 +77,128 @@ function identifyImage(buffer: Buffer): Pick<WorkspaceImage, "mimeType" | "width
   throw new CodexProError("Unsupported image format. Use PNG, JPEG, GIF, or WebP.");
 }
 
+function hash(buffer: Buffer): string {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+async function createPreview(
+  buffer: Buffer,
+  maxBytes: number,
+  maxDimension: number
+): Promise<{ buffer: Buffer; width?: number; height?: number }> {
+  const dimensions = [...new Set([
+    maxDimension,
+    Math.max(320, Math.round(maxDimension * 0.8)),
+    Math.max(320, Math.round(maxDimension * 0.65)),
+    Math.max(320, Math.round(maxDimension * 0.5))
+  ])];
+  const qualities = [82, 68, 54, 40];
+  let smallest: { buffer: Buffer; width?: number; height?: number } | undefined;
+
+  for (const dimension of dimensions) {
+    for (const quality of qualities) {
+      const converted = await sharp(buffer, { animated: false, limitInputPixels: MAX_INPUT_PIXELS })
+        .rotate()
+        .resize({ width: dimension, height: dimension, fit: "inside", withoutEnlargement: true })
+        .webp({ quality, effort: 4 })
+        .toBuffer({ resolveWithObject: true });
+      const candidate = { buffer: converted.data, width: converted.info.width, height: converted.info.height };
+      if (!smallest || candidate.buffer.byteLength < smallest.buffer.byteLength) smallest = candidate;
+      if (candidate.buffer.byteLength <= maxBytes) return candidate;
+    }
+  }
+
+  if (smallest) {
+    throw new CodexProError(
+      `Unable to create an image preview under ${maxBytes} bytes; smallest preview was ${smallest.buffer.byteLength} bytes. Increase max_bytes or use a smaller image.`
+    );
+  }
+  throw new CodexProError("Unable to create image preview.");
+}
+
 export async function viewWorkspaceImage(
   config: CodexProConfig,
   guard: PathGuard,
   workspace: Workspace,
   filePath: string,
-  maxBytes?: number
+  options: { maxBytes?: number; maxDimension?: number; mode?: ImageViewMode } = {}
 ): Promise<WorkspaceImage> {
   const resolved = guard.resolve(workspace, filePath);
   const stat = await fsp.stat(resolved.absPath);
   if (!stat.isFile()) throw new CodexProError(`Not a file: ${resolved.relPath}`);
-  const limit = Math.min(2_000_000, maxBytes ?? Math.max(config.maxReadBytes, 1_000_000));
-  if (stat.size > limit) {
-    throw new CodexProError(`Image is too large (${stat.size} bytes). Limit: ${limit} bytes.`);
+  if (stat.size > MAX_SOURCE_IMAGE_BYTES) {
+    throw new CodexProError(`Source image is too large (${stat.size} bytes). Safety limit: ${MAX_SOURCE_IMAGE_BYTES} bytes.`);
   }
+
   const buffer = await fsp.readFile(resolved.absPath);
   const identified = identifyImage(buffer);
+  const metadata = await sharp(buffer, { animated: false, limitInputPixels: MAX_INPUT_PIXELS }).metadata();
+  const originalWidth = metadata.width ?? identified.width;
+  const originalHeight = metadata.height ?? identified.height;
+  const originalSha256 = hash(buffer);
+  const defaultPreviewBytes = Math.min(DEFAULT_PREVIEW_BYTES, Math.max(256_000, config.maxReadBytes));
+  const maxBytes = Math.min(2_000_000, Math.max(4096, options.maxBytes ?? defaultPreviewBytes));
+  const maxDimension = Math.min(4096, Math.max(256, options.maxDimension ?? DEFAULT_PREVIEW_DIMENSION));
+  const mode = options.mode ?? "preview";
+
+  if (mode === "original") {
+    if (buffer.byteLength > maxBytes) {
+      throw new CodexProError(
+        `Original image is ${buffer.byteLength} bytes, above max_bytes=${maxBytes}. Increase max_bytes or use mode=preview.`
+      );
+    }
+    return {
+      path: resolved.relPath,
+      mimeType: identified.mimeType,
+      width: originalWidth,
+      height: originalHeight,
+      bytes: buffer.byteLength,
+      sha256: originalSha256,
+      data: buffer.toString("base64"),
+      previewed: false,
+      originalMimeType: identified.mimeType,
+      originalWidth,
+      originalHeight,
+      originalBytes: buffer.byteLength,
+      previewSha256: originalSha256
+    };
+  }
+
+  const exceedsDimension =
+    (originalWidth !== undefined && originalWidth > maxDimension)
+    || (originalHeight !== undefined && originalHeight > maxDimension);
+  if (buffer.byteLength <= maxBytes && !exceedsDimension) {
+    return {
+      path: resolved.relPath,
+      mimeType: identified.mimeType,
+      width: originalWidth,
+      height: originalHeight,
+      bytes: buffer.byteLength,
+      sha256: originalSha256,
+      data: buffer.toString("base64"),
+      previewed: false,
+      originalMimeType: identified.mimeType,
+      originalWidth,
+      originalHeight,
+      originalBytes: buffer.byteLength,
+      previewSha256: originalSha256
+    };
+  }
+
+  const preview = await createPreview(buffer, maxBytes, maxDimension);
   return {
     path: resolved.relPath,
-    ...identified,
-    bytes: buffer.byteLength,
-    sha256: createHash("sha256").update(buffer).digest("hex"),
-    data: buffer.toString("base64")
+    mimeType: "image/webp",
+    width: preview.width,
+    height: preview.height,
+    bytes: preview.buffer.byteLength,
+    sha256: originalSha256,
+    data: preview.buffer.toString("base64"),
+    previewed: true,
+    originalMimeType: identified.mimeType,
+    originalWidth,
+    originalHeight,
+    originalBytes: buffer.byteLength,
+    previewSha256: hash(preview.buffer)
   };
 }

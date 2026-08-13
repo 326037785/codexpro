@@ -58,14 +58,25 @@ function closestExistingParent(absPath: string): string {
   return current;
 }
 
+export interface WorkspaceSelectionState {
+  selectedWorkspaceId?: string;
+}
+
 export class WorkspaceManager {
   private readonly workspaces = new Map<string, Workspace>();
   private selectedWorkspaceId?: string;
 
   constructor(
     private readonly config: CodexProConfig,
-    private readonly sharedWorkspaceHandles?: Map<string, Workspace>
+    private readonly sharedWorkspaceHandles?: Map<string, Workspace>,
+    private readonly sharedSelection?: WorkspaceSelectionState
   ) {}
+
+  private selectWorkspace(workspace: Workspace): Workspace {
+    this.selectedWorkspaceId = workspace.id;
+    if (this.sharedSelection) this.sharedSelection.selectedWorkspaceId = workspace.id;
+    return workspace;
+  }
 
   defaultWorkspace(): Workspace {
     const existing = [...this.workspaces.values()].find((workspace) => workspace.root === this.config.defaultRoot);
@@ -73,9 +84,7 @@ export class WorkspaceManager {
   }
 
   selectDefaultWorkspace(): Workspace {
-    const workspace = this.defaultWorkspace();
-    this.selectedWorkspaceId = workspace.id;
-    return workspace;
+    return this.selectWorkspace(this.defaultWorkspace());
   }
 
   openWorkspace(rootInput?: string, options: { select?: boolean } = {}): Workspace {
@@ -98,7 +107,7 @@ export class WorkspaceManager {
 
     const existing = [...this.workspaces.values()].find((workspace) => workspace.root === realRoot);
     if (existing) {
-      if (options.select !== false) this.selectedWorkspaceId = existing.id;
+      if (options.select !== false) this.selectWorkspace(existing);
       return existing;
     }
 
@@ -109,14 +118,19 @@ export class WorkspaceManager {
       : { id, root: realRoot, openedAt: new Date().toISOString() };
     this.workspaces.set(id, workspace);
     this.sharedWorkspaceHandles?.set(id, workspace);
-    if (options.select !== false) this.selectedWorkspaceId = id;
+    if (options.select !== false) this.selectWorkspace(workspace);
     return workspace;
   }
 
   getWorkspace(id?: string): Workspace {
     if (!id) {
       if (this.selectedWorkspaceId) {
-        const selected = this.workspaces.get(this.selectedWorkspaceId);
+        const selected = this.workspaces.get(this.selectedWorkspaceId) ?? this.sharedWorkspaceHandles?.get(this.selectedWorkspaceId);
+        if (selected) return selected;
+      }
+      const sharedSelectedId = this.sharedSelection?.selectedWorkspaceId;
+      if (sharedSelectedId) {
+        const selected = this.workspaces.get(sharedSelectedId) ?? this.sharedWorkspaceHandles?.get(sharedSelectedId);
         if (selected) return selected;
       }
       return this.selectDefaultWorkspace();
@@ -129,7 +143,10 @@ export class WorkspaceManager {
   }
 
   listWorkspaces(): Workspace[] {
-    return [...this.workspaces.values()];
+    const available = new Map<string, Workspace>();
+    for (const workspace of this.sharedWorkspaceHandles?.values() ?? []) available.set(workspace.id, workspace);
+    for (const workspace of this.workspaces.values()) available.set(workspace.id, workspace);
+    return [...available.values()];
   }
 
   currentWorkspaceId(): string {

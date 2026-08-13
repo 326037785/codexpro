@@ -79,7 +79,10 @@ const DEFAULT_BLOCKED_GLOBS = [
   "**/coverage/**",
   ".cache",
   ".cache/**",
-  "**/.cache/**"
+  "**/.cache/**",
+  ".vs",
+  ".vs/**",
+  "**/.vs/**"
 ];
 
 function parseArgs(argv: string[]): Record<string, string | string[] | boolean> {

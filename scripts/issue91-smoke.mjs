@@ -45,19 +45,20 @@ try {
     throw new Error('explicit unopened workspace_id was implicitly reconstructed from allowedRoots');
   }
 
-  // HTTP-style transport sessions may share handles only after an explicit open.
+  // Short-lived HTTP transport sessions share explicit handles and the last explicit selection.
   const sharedWorkspaceHandles = new Map();
-  const firstSession = new WorkspaceManager(config, sharedWorkspaceHandles);
-  const secondSession = new WorkspaceManager(config, sharedWorkspaceHandles);
+  const sharedSelection = {};
+  const firstSession = new WorkspaceManager(config, sharedWorkspaceHandles, sharedSelection);
+  const secondSession = new WorkspaceManager(config, sharedWorkspaceHandles, sharedSelection);
   const sharedOpened = firstSession.openWorkspace(realAlternate);
-  if (secondSession.listWorkspaces().some((workspace) => workspace.id === sharedOpened.id)) {
-    throw new Error('shared workspace handle leaked into another session list');
-  }
   if (secondSession.getWorkspace(sharedOpened.id).root !== realAlternate) {
     throw new Error('explicitly opened shared workspace handle was not reusable across transport sessions');
   }
-  if (secondSession.listWorkspaces().some((workspace) => workspace.id === sharedOpened.id)) {
-    throw new Error('shared workspace lookup mutated the receiving session workspace list');
+  if (secondSession.getWorkspace().id !== sharedOpened.id) {
+    throw new Error('shared workspace selection did not survive a transport session change');
+  }
+  if (!secondSession.listWorkspaces().some((workspace) => workspace.id === sharedOpened.id)) {
+    throw new Error('shared workspace handle was missing from another transport session list');
   }
 
   // Path-scoped Git operations must bind to the nearest nested repository.

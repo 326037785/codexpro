@@ -32,6 +32,11 @@ try {
   await write('csharp/Service.cs', 'public class Service { }\n');
   await write('c/service.c', 'int load_user(int id) { return id; }\n');
   await write('cpp/service.cpp', 'class Service { };\n');
+  await write('native/find_shape_model.sln', 'Microsoft Visual Studio Solution File\n');
+  await write('native/find_shape_model.vcxproj', '<Project />\n');
+  await write('native/include/shape_match.hpp', '#pragma once\n');
+  await write('native/main.cpp', '#include "shape_match.hpp"\nint main() { return 0; }\n');
+  await write('.vs/find_shape_model/v17/DocumentLayout.json', '{}\n');
   await write('notes/many.txt', Array.from({ length: 20 }, (_, index) => `common marker ${index}`).join('\n') + '\n');
   await write('unknown/service.zig', 'pub fn loadUser() void {}\n');
   await write('packages/core/package.json', JSON.stringify({ name: '@fixture/core' }, null, 2));
@@ -64,7 +69,11 @@ try {
   assert(result.files.some((file) => file.path === 'test/auth.test.ts' && file.role === 'test'));
   assert(!result.files.some((file) => file.path === '.env'));
   assert(classification.detectProjectTypes(result.files).includes('node'));
+  assert(classification.detectProjectTypes(result.files).includes('msvc-cpp'));
+  assert(!classification.detectProjectTypes(result.files).includes('dotnet'));
   assert(result.files.some((file) => file.path === 'src/index.ts' && file.entrypoint === true));
+  assert(result.files.some((file) => file.path === 'native/main.cpp' && file.entrypoint === true));
+  assert(!result.files.some((file) => file.path.startsWith('.vs/')));
   assert.equal(result.coverage.inventoryFiles, result.files.length);
   assert.match(result.fingerprint, /^[a-f0-9]{64}$/);
   assert(result.files.some((file) => file.path === 'unknown/service.zig' && file.language === 'unknown'));
@@ -78,6 +87,7 @@ try {
   assert(analysis.symbols.some((symbol) => symbol.name === 'authenticate' && symbol.kind === 'function' && symbol.path === 'src/auth.ts'));
   assert(analysis.relationships.some((edge) => edge.from === 'src/index.ts' && edge.to === 'src/auth.ts' && edge.kind === 'imports'));
   assert(analysis.relationships.some((edge) => edge.from === 'packages/web/src/index.ts' && edge.to === 'packages/core/src/index.ts' && edge.kind === 'imports'));
+  assert(analysis.relationships.some((edge) => edge.from === 'native/main.cpp' && edge.to === 'native/include/shape_match.hpp' && edge.kind === 'imports'));
 
   const expectedSymbols = [
     ['python/service.py', 'load_user'],
@@ -87,7 +97,8 @@ try {
     ['java/Service.java', 'Service'],
     ['csharp/Service.cs', 'Service'],
     ['c/service.c', 'load_user'],
-    ['cpp/service.cpp', 'Service']
+    ['cpp/service.cpp', 'Service'],
+    ['native/main.cpp', 'main']
   ];
   for (const [file, name] of expectedSymbols) {
     assert(analysis.symbols.some((symbol) => symbol.path === file && symbol.name === name), `missing ${name} in ${file}`);

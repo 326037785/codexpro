@@ -1456,6 +1456,7 @@ async function main(): Promise<void> {
 
   const app = express();
   const sharedWorkspaceHandles = new Map<string, Workspace>();
+  const sharedWorkspaceSelection: { selectedWorkspaceId?: string } = {};
   const logRequests = process.env.CODEXPRO_LOG_REQUESTS === "1";
   const authFailureWindow = new Map<string, { count: number; resetAt: number }>();
   const authFailureLimit = 10;
@@ -1701,7 +1702,7 @@ async function main(): Promise<void> {
           if (closedSessionId) transports.delete(closedSessionId);
         };
 
-        const server = createCodexProServer(config, { sharedWorkspaceHandles });
+        const server = createCodexProServer(config, { sharedWorkspaceHandles, sharedSelection: sharedWorkspaceSelection });
         await server.connect(transport);
       } else {
         sendSessionError(res, sessionId);

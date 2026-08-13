@@ -71,13 +71,29 @@ function importSpecifiers(language: AnalysisLanguage, line: string): string[] {
     return match ? [match[1] ?? match[2]].filter(Boolean) : [];
   }
   if (language === "c" || language === "cpp") {
-    const match = line.match(/^\s*#include\s*["<]([^">]+)[">]/);
+    const match = line.match(/^\s*#include\s*"([^"]+)"/);
     return match ? [match[1]] : [];
   }
   return [];
 }
 
-function resolveInternalImport(fromPath: string, specifier: string, files: Set<string>): string | undefined {
+function resolveInternalImport(
+  fromPath: string,
+  specifier: string,
+  files: Set<string>,
+  language: AnalysisLanguage,
+  basenameIndex: Map<string, string[]>
+): string | undefined {
+  if (language === "c" || language === "cpp") {
+    const normalizedSpecifier = specifier.replaceAll("\\", "/");
+    const relativeCandidate = path.posix.normalize(path.posix.join(path.posix.dirname(fromPath), normalizedSpecifier));
+    if (files.has(relativeCandidate)) return relativeCandidate;
+    const suffix = `/${normalizedSpecifier}`;
+    const bucket = basenameIndex.get(path.posix.basename(normalizedSpecifier)) ?? [];
+    const matches = bucket.filter((candidate) => candidate === normalizedSpecifier || candidate.endsWith(suffix));
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+
   if (!specifier.startsWith(".")) return undefined;
   const raw = path.posix.normalize(path.posix.join(path.posix.dirname(fromPath), specifier));
   const withoutRuntimeExtension = raw.replace(/\.(js|mjs|cjs)$/, "");
@@ -89,9 +105,26 @@ export async function extractWorkspaceFiles(
   config: CodexProConfig,
   guard: PathGuard,
   workspace: Workspace,
-  inventoryFiles: InventoryFile[]
+  inventoryFiles: InventoryFile[],
+  resolvePaths: readonly string[] = []
 ): Promise<{ files: ExtractedFile[]; analyzedFiles: number; scannedBytes: number; truncated: boolean; warnings: string[] }> {
+  // resolvePaths are additional known paths (not extracted themselves) that imports may
+  // resolve against, e.g. in-scope files while extracting related out-of-scope tests.
   const fileSet = new Set(inventoryFiles.map((file) => file.path));
+  const basenameIndex = new Map<string, string[]>();
+  for (const file of inventoryFiles) {
+    const basename = path.posix.basename(file.path);
+    const bucket = basenameIndex.get(basename);
+    if (bucket) bucket.push(file.path);
+    else basenameIndex.set(basename, [file.path]);
+  }
+  for (const resolvePath of resolvePaths) {
+    fileSet.add(resolvePath);
+    const basename = path.posix.basename(resolvePath);
+    const bucket = basenameIndex.get(basename);
+    if (bucket) bucket.push(resolvePath);
+    else basenameIndex.set(basename, [resolvePath]);
+  }
   const extracted: ExtractedFile[] = [];
   let scannedBytes = 0;
   let symbolCount = 0;
@@ -134,7 +167,7 @@ export async function extractWorkspaceFiles(
         symbolCount += 1;
       }
       for (const specifier of importSpecifiers(file.language, line)) {
-        const target = resolveInternalImport(file.path, specifier, fileSet);
+        const target = resolveInternalImport(file.path, specifier, fileSet, file.language, basenameIndex);
         if (target && !imports.includes(target)) imports.push(target);
       }
     }

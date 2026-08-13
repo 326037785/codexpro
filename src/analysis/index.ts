@@ -10,8 +10,8 @@ import { inventoryWorkspace } from "./inventory.js";
 import { classifySearchIntent, emptySearchGroups, groupForFile, sortStructuredMatches } from "./rank.js";
 import type { AnalysisSearchIntent, StructuredSearchMatch, StructuredSearchResult, WorkspaceAnalysis } from "./types.js";
 
-function cacheKey(workspace: Workspace, fingerprint: string, config: CodexProConfig): string {
-  return `${workspace.id}:${fingerprint}:${JSON.stringify(config.analysisLimits)}`;
+function cacheKey(workspace: Workspace, fingerprint: string, config: CodexProConfig, root = "."): string {
+  return `${workspace.id}:${root}:${fingerprint}:${JSON.stringify(config.analysisLimits)}`;
 }
 
 function areasFor(files: WorkspaceAnalysis["files"]): WorkspaceAnalysis["areas"] {
@@ -26,10 +26,16 @@ function areasFor(files: WorkspaceAnalysis["files"]): WorkspaceAnalysis["areas"]
   return [...counts.entries()].map(([areaPath, value]) => ({ path: areaPath, ...value })).sort((a, b) => b.files - a.files || a.path.localeCompare(b.path));
 }
 
-export async function inspectWorkspace(config: CodexProConfig, guard: PathGuard, workspace: Workspace): Promise<WorkspaceAnalysis> {
+export async function inspectWorkspace(
+  config: CodexProConfig,
+  guard: PathGuard,
+  workspace: Workspace,
+  options: { root?: string } = {}
+): Promise<WorkspaceAnalysis> {
   if (!config.analysisEnabled) throw new Error("Repository analysis is disabled by CODEXPRO_ANALYSIS=0.");
-  const inventory = await inventoryWorkspace(config, guard, workspace);
-  const key = cacheKey(workspace, inventory.fingerprint, config);
+  const root = options.root?.trim() ? guard.resolve(workspace, options.root).relPath : ".";
+  const inventory = await inventoryWorkspace(config, guard, workspace, { root });
+  const key = cacheKey(workspace, inventory.fingerprint, config, root);
   const cached = getCachedWorkspaceAnalysis(key);
   if (cached) return { ...cached, cache: { hit: true, key } };
 
@@ -75,7 +81,7 @@ export async function searchWorkspaceStructured(
 ): Promise<StructuredSearchResult> {
   const query = options.query.trim();
   if (!query) throw new Error("query is required.");
-  const analysis = await inspectWorkspace(config, guard, workspace);
+  const analysis = await inspectWorkspace(config, guard, workspace, { root: options.root });
   const intent = classifySearchIntent(query, options.intent ?? "auto", options.regex);
   const groups = emptySearchGroups();
   const lowered = query.toLowerCase();
@@ -197,6 +203,50 @@ export async function searchWorkspaceStructured(
     }
   }
 
+  // Secondary, bounded test expansion: when the primary scope excludes tests but
+  // include_tests is requested, discover only out-of-scope tests that depend on an
+  // in-scope match. The dependency is the inclusion condition; a lexical query hit
+  // only raises the score.
+  let testExpansionTruncated = false;
+  if (options.includeTests && resolvedRoot && matches.length > 0) {
+    const inScopeMatchedPaths = new Set(matches.map((match) => match.path));
+    // ponytail: metadata-wide walk locates out-of-scope tests; swap for git ls-files or rg --files with test globs if repositories get large.
+    const workspaceInventory = await inventoryWorkspace(config, guard, workspace);
+    const candidateTests = workspaceInventory.files.filter((file) => file.role === "test" && !inScope(file.path));
+    if (candidateTests.length > 0) {
+      const extraction = await extractWorkspaceFiles(config, guard, workspace, candidateTests, [...inScopeMatchedPaths]);
+      testExpansionTruncated = extraction.truncated;
+      for (const file of extraction.files) {
+        const target = file.imports.find((importPath) => inScopeMatchedPaths.has(importPath));
+        if (!target) continue;
+        if (matches.length >= candidateLimit) {
+          candidateLimitReached = true;
+          continue;
+        }
+        const reasons = ["dependent test", "test relationship"];
+        let score = 170;
+        let matchText = `tests ${target}`;
+        const hitLine = file.text.split(/\r?\n/).find((line) => line.toLowerCase().includes(lowered));
+        if (hitLine) {
+          reasons.push("exact text match");
+          score = 180;
+          matchText = redactSensitiveText(hitLine.trim().slice(0, 400));
+        }
+        matches.push({
+          path: file.path,
+          line: 1,
+          text: matchText,
+          group: "tests",
+          score,
+          reasons,
+          confidence: "strong",
+          source: "built-in analysis"
+        });
+      }
+    }
+  }
+  if (testExpansionTruncated) warnings.push("Related test expansion reached its configured file or byte limit.");
+
   if (candidateLimitReached) warnings.push(`Grouped search retained the first ${candidateLimit} candidates before ranking.`);
 
   for (const match of sortStructuredMatches(matches).slice(0, resultLimit)) groups[match.group].push(match);
@@ -208,7 +258,7 @@ export async function searchWorkspaceStructured(
     matches: Object.values(groups).flat(),
     coverage: {
       ...analysis.coverage,
-      truncated: analysis.coverage.truncated || searchBudgetReached || candidateLimitReached || skippedFiles > 0,
+      truncated: analysis.coverage.truncated || searchBudgetReached || candidateLimitReached || skippedFiles > 0 || testExpansionTruncated,
       warnings
     },
     warnings,

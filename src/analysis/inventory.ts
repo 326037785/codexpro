@@ -6,9 +6,14 @@ import type { PathGuard, Workspace } from "../guard.js";
 import { classifyFileRole, classifyLanguage, isEntrypoint, isGeneratedFile } from "./classify.js";
 import type { InventoryFile, InventoryResult } from "./types.js";
 
-export async function inventoryWorkspace(config: CodexProConfig, guard: PathGuard, workspace: Workspace): Promise<InventoryResult> {
+export async function inventoryWorkspace(
+  config: CodexProConfig,
+  guard: PathGuard,
+  workspace: Workspace,
+  options: { root?: string } = {}
+): Promise<InventoryResult> {
   const maxFiles = config.analysisLimits.maxInventoryFiles;
-  const candidates = await listFiles(guard, workspace, { root: ".", includeHidden: true, maxFiles: maxFiles + 1 });
+  const candidates = await listFiles(guard, workspace, { root: options.root ?? ".", includeHidden: true, maxFiles: maxFiles + 1 });
   const truncated = candidates.length > maxFiles;
   const files: InventoryFile[] = [];
 

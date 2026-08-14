@@ -515,7 +515,7 @@ function serverInstructions(config: CodexProConfig): string {
     "CodexPro connects ChatGPT to explicitly allowed local development workspaces.",
     "",
     "Preferred workflow:",
-    "1. Start with open_current_workspace. Use open_workspace only when the user gives a different allowed root or asks to switch projects; ChatGPT workspace selection follows the current conversation across short-lived HTTP transports, while explicit workspace_id handles remain reusable across sessions.",
+    "1. Start with open_current_workspace. Use open_workspace only when the user gives a different allowed root or asks to switch projects; HTTP bridge calls preserve the last explicit selection across short-lived transport sessions.",
     "2. Follow any AGENTS.md-style instructions returned by the workspace open call before editing files.",
     "3. Use progressive retrieval: start from the user-named target with a shallow tree or targeted search, read only the files needed for the current decision, and expand to dependencies/tests/docs only when the task requires it. Do not build a repository-wide model by default.",
     "4. Use inspect_workspace only for explicit repository/area architecture analysis or when targeted navigation is insufficient. Prefer a scoped path when using it.",
@@ -1513,7 +1513,7 @@ export function createCodexProServer(
     {
       title: "Open Workspace",
       description:
-        "Open and select an allowed local project. In ChatGPT, omitted-id calls preserve this selection across short-lived HTTP transports within the same conversation without inheriting another conversation's selection; explicit workspace_id handles remain reusable across sessions.",
+        "Open and select an allowed local project. HTTP bridge calls preserve this selection across short-lived transport sessions, so later tool calls may omit workspace_id.",
       inputSchema: {
         root: z.string().optional().describe("Project directory to open. Omit to use CODEXPRO_ROOT/current working directory. Supports ~/ paths."),
         path: z.string().optional().describe("Alias for root. Useful for clients that naturally send path instead of root."),

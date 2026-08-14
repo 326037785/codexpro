@@ -680,15 +680,15 @@ try {
     await withClient(mcpUrl, async (secondClient) => {
       const secondList = await callTool(secondClient, 'list_workspaces');
       if (
-        secondList.structuredContent.selected_workspace_id !== alternate.structuredContent.workspace_id
+        secondList.structuredContent.selected_workspace_id !== currentOpened
         || !secondList.structuredContent.workspaces.some((workspace) => workspace.root === alternateRoot)
       ) {
-        throw new Error(`HTTP workspace selection did not survive a transport session change: ${JSON.stringify(secondList.structuredContent)}`);
+        throw new Error(`HTTP workspace selection leaked across transport sessions: ${JSON.stringify(secondList.structuredContent)}`);
       }
-      const inheritedRead = await callTool(secondClient, 'read', { path: 'selected.txt' });
-      const inheritedText = inheritedRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
-      if (!inheritedText.includes('http alternate workspace')) {
-        throw new Error(`HTTP inherited workspace selection did not drive an omitted-id read: ${inheritedText}`);
+      const defaultRead = await callTool(secondClient, 'read', { path: 'session-checkpoint.txt' });
+      const defaultText = defaultRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
+      if (!defaultText.includes('checkpoint changed')) {
+        throw new Error(`second HTTP session did not use the default workspace for omitted-id reads: ${defaultText}`);
       }
       const sharedSnapshot = await callTool(secondClient, 'workspace_snapshot', {
         workspace_id: alternate.structuredContent.workspace_id,

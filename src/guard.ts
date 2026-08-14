@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -60,21 +61,28 @@ function closestExistingParent(absPath: string): string {
 
 export interface WorkspaceSelectionState {
   selectedWorkspaceId?: string;
+  lastSeenAt?: number;
 }
 
 export class WorkspaceManager {
   private readonly workspaces = new Map<string, Workspace>();
   private selectedWorkspaceId?: string;
+  private readonly scopedSelection = new AsyncLocalStorage<WorkspaceSelectionState>();
 
   constructor(
     private readonly config: CodexProConfig,
-    private readonly sharedWorkspaceHandles?: Map<string, Workspace>,
-    private readonly sharedSelection?: WorkspaceSelectionState
+    private readonly sharedWorkspaceHandles?: Map<string, Workspace>
   ) {}
 
+  withSelection<T>(selection: WorkspaceSelectionState | undefined, callback: () => T): T {
+    if (!selection) return callback();
+    return this.scopedSelection.run(selection, callback);
+  }
+
   private selectWorkspace(workspace: Workspace): Workspace {
-    this.selectedWorkspaceId = workspace.id;
-    if (this.sharedSelection) this.sharedSelection.selectedWorkspaceId = workspace.id;
+    const scoped = this.scopedSelection.getStore();
+    if (scoped) scoped.selectedWorkspaceId = workspace.id;
+    else this.selectedWorkspaceId = workspace.id;
     return workspace;
   }
 
@@ -124,13 +132,9 @@ export class WorkspaceManager {
 
   getWorkspace(id?: string): Workspace {
     if (!id) {
-      if (this.selectedWorkspaceId) {
-        const selected = this.workspaces.get(this.selectedWorkspaceId) ?? this.sharedWorkspaceHandles?.get(this.selectedWorkspaceId);
-        if (selected) return selected;
-      }
-      const sharedSelectedId = this.sharedSelection?.selectedWorkspaceId;
-      if (sharedSelectedId) {
-        const selected = this.workspaces.get(sharedSelectedId) ?? this.sharedWorkspaceHandles?.get(sharedSelectedId);
+      const selectedWorkspaceId = this.scopedSelection.getStore()?.selectedWorkspaceId ?? this.selectedWorkspaceId;
+      if (selectedWorkspaceId) {
+        const selected = this.workspaces.get(selectedWorkspaceId) ?? this.sharedWorkspaceHandles?.get(selectedWorkspaceId);
         if (selected) return selected;
       }
       return this.selectDefaultWorkspace();

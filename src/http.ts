@@ -20,7 +20,7 @@ import {
 } from "./profileStore.js";
 import { redactSensitiveText, redactStructured } from "./redact.js";
 import { createCodexProServer } from "./server.js";
-import type { Workspace } from "./guard.js";
+import type { Workspace, WorkspaceSelectionState } from "./guard.js";
 
 function escapeHtml(value: unknown): string {
   return String(value ?? "")
@@ -1456,6 +1456,9 @@ async function main(): Promise<void> {
 
   const app = express();
   const sharedWorkspaceHandles = new Map<string, Workspace>();
+  const conversationSelections = new Map<string, WorkspaceSelectionState>();
+  const conversationSelectionTtlMs = 24 * 60 * 60_000;
+  const maxConversationSelections = Math.max(64, config.maxHttpSessions * 4);
   const logRequests = process.env.CODEXPRO_LOG_REQUESTS === "1";
   const authFailureWindow = new Map<string, { count: number; resetAt: number }>();
   const authFailureLimit = 10;
@@ -1603,6 +1606,18 @@ async function main(): Promise<void> {
       transports.delete(oldest[0]);
       closeTransport(oldest[1]);
     }
+    for (const [sessionId, selection] of conversationSelections) {
+      if (now - (selection.lastSeenAt ?? now) > conversationSelectionTtlMs) {
+        conversationSelections.delete(sessionId);
+      }
+    }
+    while (conversationSelections.size > maxConversationSelections) {
+      const oldest = [...conversationSelections.entries()].sort(
+        (a, b) => (a[1].lastSeenAt ?? 0) - (b[1].lastSeenAt ?? 0)
+      )[0];
+      if (!oldest) break;
+      conversationSelections.delete(oldest[0]);
+    }
   }
 
   function getTransport(sessionId: string | undefined): StreamableHTTPServerTransport | undefined {
@@ -1701,8 +1716,7 @@ async function main(): Promise<void> {
           if (closedSessionId) transports.delete(closedSessionId);
         };
 
-        const sessionWorkspaceSelection: { selectedWorkspaceId?: string } = {};
-        const server = createCodexProServer(config, { sharedWorkspaceHandles, sharedSelection: sessionWorkspaceSelection });
+        const server = createCodexProServer(config, { sharedWorkspaceHandles, conversationSelections });
         await server.connect(transport);
       } else {
         sendSessionError(res, sessionId);

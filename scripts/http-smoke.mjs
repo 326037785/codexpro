@@ -171,8 +171,10 @@ async function withClient(url, fn) {
   }
 }
 
-async function callTool(client, name, args = {}) {
-  const result = await client.callTool({ name, arguments: args });
+async function callTool(client, name, args = {}, meta) {
+  const request = { name, arguments: args };
+  if (meta) request._meta = meta;
+  const result = await client.callTool(request);
   if (result.isError) {
     const text = result.content?.find?.((part) => part.type === 'text')?.text ?? JSON.stringify(result.structuredContent);
     throw new Error(`${name} failed: ${text}`);
@@ -666,42 +668,55 @@ try {
     throw new Error(`open_current_workspace returned ${currentOpened}, open_workspace default returned ${opened}`);
   }
 
+  const conversationA = { 'openai/session': 'http-smoke-conversation-a' };
+  const conversationB = { 'openai/session': 'http-smoke-conversation-b' };
   await withClient(mcpUrl, async (firstClient) => {
     const alternate = await callTool(firstClient, 'open_workspace', {
       root: alternateRoot,
       include_tree: false
-    });
-    const firstSelected = await callTool(firstClient, 'read', { path: 'selected.txt' });
+    }, conversationA);
+    const firstSelected = await callTool(firstClient, 'read', { path: 'selected.txt' }, conversationA);
     const firstText = firstSelected.content?.find?.((part) => part.type === 'text')?.text ?? '';
     if (!firstText.includes('http alternate workspace')) {
-      throw new Error(`first HTTP session did not retain selected workspace: ${firstText}`);
+      throw new Error(`first ChatGPT conversation did not retain selected workspace: ${firstText}`);
     }
 
     await withClient(mcpUrl, async (secondClient) => {
-      const secondList = await callTool(secondClient, 'list_workspaces');
+      const secondList = await callTool(secondClient, 'list_workspaces', {}, conversationA);
       if (
-        secondList.structuredContent.selected_workspace_id !== currentOpened
+        secondList.structuredContent.selected_workspace_id !== alternate.structuredContent.workspace_id
         || !secondList.structuredContent.workspaces.some((workspace) => workspace.root === alternateRoot)
       ) {
-        throw new Error(`HTTP workspace selection leaked across transport sessions: ${JSON.stringify(secondList.structuredContent)}`);
+        throw new Error(`HTTP conversation selection did not survive a transport change: ${JSON.stringify(secondList.structuredContent)}`);
       }
-      const defaultRead = await callTool(secondClient, 'read', { path: 'session-checkpoint.txt' });
+      const inheritedRead = await callTool(secondClient, 'read', { path: 'selected.txt' }, conversationA);
+      const inheritedText = inheritedRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
+      if (!inheritedText.includes('http alternate workspace')) {
+        throw new Error(`HTTP conversation selection did not drive an omitted-id read: ${inheritedText}`);
+      }
+
+      const isolatedList = await callTool(secondClient, 'list_workspaces', {}, conversationB);
+      if (isolatedList.structuredContent.selected_workspace_id !== currentOpened) {
+        throw new Error(`HTTP workspace selection leaked between ChatGPT conversations: ${JSON.stringify(isolatedList.structuredContent)}`);
+      }
+      const defaultRead = await callTool(secondClient, 'read', { path: 'session-checkpoint.txt' }, conversationB);
       const defaultText = defaultRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
       if (!defaultText.includes('checkpoint changed')) {
-        throw new Error(`second HTTP session did not use the default workspace for omitted-id reads: ${defaultText}`);
+        throw new Error(`isolated ChatGPT conversation did not use the default workspace: ${defaultText}`);
       }
+
       const sharedSnapshot = await callTool(secondClient, 'workspace_snapshot', {
         workspace_id: alternate.structuredContent.workspace_id,
         max_depth: 1
-      });
+      }, conversationB);
       if (sharedSnapshot.structuredContent.workspace_id !== alternate.structuredContent.workspace_id) {
         throw new Error(`HTTP explicit workspace handle did not survive transport session change: ${JSON.stringify(sharedSnapshot.structuredContent)}`);
       }
     });
 
-    const firstList = await callTool(firstClient, 'list_workspaces');
+    const firstList = await callTool(firstClient, 'list_workspaces', {}, conversationA);
     if (firstList.structuredContent.selected_workspace_id !== alternate.structuredContent.workspace_id) {
-      throw new Error(`first HTTP session lost its workspace selection: ${JSON.stringify(firstList.structuredContent)}`);
+      throw new Error(`first ChatGPT conversation lost its workspace selection: ${JSON.stringify(firstList.structuredContent)}`);
     }
   });
 

@@ -45,17 +45,23 @@ try {
     throw new Error('explicit unopened workspace_id was implicitly reconstructed from allowedRoots');
   }
 
-  // Short-lived HTTP transport sessions share explicit handles and the last explicit selection.
+  // Short-lived HTTP transports share explicit workspace handles, while implicit selection is conversation-scoped.
   const sharedWorkspaceHandles = new Map();
-  const sharedSelection = {};
-  const firstSession = new WorkspaceManager(config, sharedWorkspaceHandles, sharedSelection);
-  const secondSession = new WorkspaceManager(config, sharedWorkspaceHandles, sharedSelection);
-  const sharedOpened = firstSession.openWorkspace(realAlternate);
+  const conversationSelection = {};
+  const isolatedSelection = {};
+  const firstSession = new WorkspaceManager(config, sharedWorkspaceHandles);
+  const secondSession = new WorkspaceManager(config, sharedWorkspaceHandles);
+  const sharedOpened = firstSession.withSelection(conversationSelection, () => firstSession.openWorkspace(realAlternate));
   if (secondSession.getWorkspace(sharedOpened.id).root !== realAlternate) {
     throw new Error('explicitly opened shared workspace handle was not reusable across transport sessions');
   }
-  if (secondSession.getWorkspace().id !== sharedOpened.id) {
-    throw new Error('shared workspace selection did not survive a transport session change');
+  const inheritedWorkspace = secondSession.withSelection(conversationSelection, () => secondSession.getWorkspace());
+  if (inheritedWorkspace.id !== sharedOpened.id) {
+    throw new Error('conversation-scoped workspace selection did not survive a transport session change');
+  }
+  const isolatedWorkspace = secondSession.withSelection(isolatedSelection, () => secondSession.getWorkspace());
+  if (isolatedWorkspace.root !== realRoot) {
+    throw new Error('workspace selection leaked into an unrelated conversation scope');
   }
   if (!secondSession.listWorkspaces().some((workspace) => workspace.id === sharedOpened.id)) {
     throw new Error('shared workspace handle was missing from another transport session list');

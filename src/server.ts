@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { CodexProConfig } from "./config.js";
-import { WorkspaceManager, PathGuard, CodexProError, type Workspace } from "./guard.js";
+import { WorkspaceManager, PathGuard, CodexProError, type Workspace, type WorkspaceSelectionState } from "./guard.js";
 import { repoTree, readTextFile, writeTextFile, editTextFile, ensureAiBridge, withFileWriteLocks } from "./fsOps.js";
 import { viewWorkspaceImage } from "./imageOps.js";
 import { importAttachmentFile } from "./importOps.js";
@@ -217,7 +217,8 @@ function registerToolCardResource(server: McpServer, config: CodexProConfig): vo
   }
 }
 
-type CodexToolHandler = (args: any) => Promise<any> | any;
+type CodexToolCallExtra = { _meta?: Record<string, unknown> };
+type CodexToolHandler = (args: any, extra?: CodexToolCallExtra) => Promise<any> | any;
 
 const SUPERTOOL_NAME = "codexpro";
 const SUPERTOOL_ACTION_ALIASES: Record<string, string> = {
@@ -235,6 +236,26 @@ const SUPERTOOL_ACTION_ALIASES: Record<string, string> = {
 };
 
 const registeredToolHandlersByServer = new WeakMap<object, Map<string, CodexToolHandler>>();
+const toolExecutionContextByServer = new WeakMap<object, {
+  workspaces: WorkspaceManager;
+  conversationSelections?: Map<string, WorkspaceSelectionState>;
+}>();
+
+function conversationSelection(server: McpServer, extra?: CodexToolCallExtra): WorkspaceSelectionState | undefined {
+  const context = toolExecutionContextByServer.get(server as object);
+  if (!context?.conversationSelections) return undefined;
+  const rawSessionId = extra?._meta?.["openai/session"];
+  if (typeof rawSessionId !== "string") return undefined;
+  const sessionId = rawSessionId.trim();
+  if (!sessionId || sessionId.length > 512) return undefined;
+  let selection = context.conversationSelections.get(sessionId);
+  if (!selection) {
+    selection = {};
+    context.conversationSelections.set(sessionId, selection);
+  }
+  selection.lastSeenAt = Date.now();
+  return selection;
+}
 
 function rememberRegisteredToolHandler(server: McpServer, name: string, handler: CodexToolHandler): void {
   const key = server as object;
@@ -276,12 +297,18 @@ function registerToolCompat(
   server: McpServer,
   name: string,
   options: Record<string, unknown>,
-  handler: (args: any) => Promise<any> | any
+  handler: CodexToolHandler
 ): void {
-  const wrapped = async (args: any) => {
+  const wrapped = async (args: any, extra?: CodexToolCallExtra) => {
     const started = Date.now();
     try {
-      const result = tagToolResult(await handler(args ?? {}), name, options);
+      const context = toolExecutionContextByServer.get(server as object);
+      const selection = conversationSelection(server, extra);
+      const invoke = () => handler(args ?? {}, extra);
+      const rawResult = context
+        ? await context.workspaces.withSelection(selection, invoke)
+        : await invoke();
+      const result = tagToolResult(rawResult, name, options);
       logToolCall(name, result?.isError ? "error" : "ok", started);
       return result;
     } catch (error) {
@@ -464,7 +491,7 @@ function registerCodexTool(
   handler: CodexToolHandler
 ): void {
   if (!shouldRegisterTool(config, name)) return;
-  const validatedHandler: CodexToolHandler = (args) => handler(validateToolArgs(name, options, args));
+  const validatedHandler: CodexToolHandler = (args, extra) => handler(validateToolArgs(name, options, args), extra);
   registerToolCompat(server, name, descriptorOptionsForConfig(config, name, options), validatedHandler);
   rememberRegisteredTool(server, name);
   rememberRegisteredToolHandler(server, name, validatedHandler);
@@ -488,7 +515,7 @@ function serverInstructions(config: CodexProConfig): string {
     "CodexPro connects ChatGPT to explicitly allowed local development workspaces.",
     "",
     "Preferred workflow:",
-    "1. Start with open_current_workspace. Use open_workspace only when the user gives a different allowed root or asks to switch projects; workspace selection is local to the current MCP session, while explicit workspace_id handles remain reusable across HTTP sessions.",
+    "1. Start with open_current_workspace. Use open_workspace only when the user gives a different allowed root or asks to switch projects; ChatGPT workspace selection follows the current conversation across short-lived HTTP transports, while explicit workspace_id handles remain reusable across sessions.",
     "2. Follow any AGENTS.md-style instructions returned by the workspace open call before editing files.",
     "3. Use progressive retrieval: start from the user-named target with a shallow tree or targeted search, read only the files needed for the current decision, and expand to dependencies/tests/docs only when the task requires it. Do not build a repository-wide model by default.",
     "4. Use inspect_workspace only for explicit repository/area architecture analysis or when targeted navigation is insufficient. Prefer a scoped path when using it.",
@@ -932,14 +959,18 @@ export function createCodexProServer(
   config: CodexProConfig,
   options: {
     sharedWorkspaceHandles?: Map<string, Workspace>;
-    sharedSelection?: { selectedWorkspaceId?: string };
+    conversationSelections?: Map<string, WorkspaceSelectionState>;
   } = {}
 ): McpServer {
-  const workspaces = new WorkspaceManager(config, options.sharedWorkspaceHandles, options.sharedSelection);
+  const workspaces = new WorkspaceManager(config, options.sharedWorkspaceHandles);
   const reviewCheckpoints = new Map<string, string>();
   const guard = new PathGuard(config);
   const server = new McpServer({ name: "CodexPro", version: "0.30.0" }, { instructions: serverInstructions(config) });
   registeredToolNamesByServer.set(server as object, []);
+  toolExecutionContextByServer.set(server as object, {
+    workspaces,
+    conversationSelections: options.conversationSelections
+  });
   registerToolCardResource(server, config);
 
   registerCodexTool(
@@ -961,7 +992,7 @@ export function createCodexProServer(
         "openai/toolInvocation/invoked": "CodexPro supertool action complete"
       }
     },
-    async (args) => {
+    async (args, extra) => {
       const action = normalizeSupertoolAction(args.action);
       const names = registeredToolNames(server).filter((name) => name !== SUPERTOOL_NAME);
       if (action === "list_actions" || action === "help") {
@@ -1008,7 +1039,7 @@ export function createCodexProServer(
           : {};
       let result: any;
       try {
-        result = await handler(childArgs);
+        result = await handler(childArgs, extra);
       } catch (error) {
         result = errorResult(error);
       }
@@ -1482,7 +1513,7 @@ export function createCodexProServer(
     {
       title: "Open Workspace",
       description:
-        "Open and select an allowed local project for the current MCP session. Explicit workspace_id handles may be reused across HTTP sessions, but omitted-id calls never inherit another session's selection.",
+        "Open and select an allowed local project. In ChatGPT, omitted-id calls preserve this selection across short-lived HTTP transports within the same conversation without inheriting another conversation's selection; explicit workspace_id handles remain reusable across sessions.",
       inputSchema: {
         root: z.string().optional().describe("Project directory to open. Omit to use CODEXPRO_ROOT/current working directory. Supports ~/ paths."),
         path: z.string().optional().describe("Alias for root. Useful for clients that naturally send path instead of root."),

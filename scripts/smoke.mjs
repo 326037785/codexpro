@@ -171,6 +171,10 @@ await fs.writeFile(path.join(tmp, 'package.json'), JSON.stringify({
 }, null, 2), 'utf8');
 await fs.mkdir(path.join(tmp, 'src'), { recursive: true });
 await fs.writeFile(path.join(tmp, 'src', 'auth.ts'), 'export function authenticate(user) { return Boolean(user); }\n', 'utf8');
+await fs.mkdir(path.join(tmp, 'CMakeFiles'), { recursive: true });
+await fs.writeFile(path.join(tmp, 'CMakeFiles', 'generated.txt'), 'generated cmake file\n', 'utf8');
+await fs.writeFile(path.join(tmp, 'CMakeCache.txt'), 'generated cache\n', 'utf8');
+await fs.writeFile(path.join(tmp, 'ALL_BUILD.vcxproj'), '<Project>generated smoke fixture</Project>\n', 'utf8');
 await fs.mkdir(path.join(tmp, 'test'), { recursive: true });
 await fs.writeFile(path.join(tmp, 'test', 'auth.test.ts'), "import { authenticate } from '../src/auth.js';\nvoid authenticate('test');\n", 'utf8');
 await fs.writeFile(path.join(tmp, 'é.ts'), 'export const accent = 1;\n', 'utf8');
@@ -206,7 +210,7 @@ try {
   symlinkEscapePath = 'secret-link-dir/secret.txt';
   await fs.symlink(outside, path.join(tmp, 'secret-link-dir'), 'junction');
 }
-for (const args of [['init'], ['config', 'core.quotePath', 'true'], ['add', 'demo.txt', 'other.txt', 'patch-race.txt', 'AGENTS.md', 'package.json', 'src/auth.ts', 'test/auth.test.ts', 'search-overflow.txt', 'é.ts', '旧名.ts']]) {
+for (const args of [['init'], ['config', 'core.quotePath', 'true'], ['add', 'demo.txt', 'other.txt', 'patch-race.txt', 'AGENTS.md', 'package.json', 'src/auth.ts', 'test/auth.test.ts', 'search-overflow.txt', 'é.ts', '旧名.ts', 'CMakeFiles/generated.txt', 'CMakeCache.txt', 'ALL_BUILD.vcxproj']]) {
   const result = spawnSync('git', args, { cwd: tmp, encoding: 'utf8' });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
@@ -413,6 +417,38 @@ if (activeSmokeSkills.length !== 1 || activeSmokeSkills[0].source !== 'workspace
 if (currentWithSkills.structuredContent.skill_inventory?.some?.((skill) => skill.name === 'outside-skill')) {
   throw new Error('open_current_workspace followed a symlinked workspace skill root outside the workspace');
 }
+const defaultNavigationTree = await client.request('tools/call', {
+  name: 'tree',
+  arguments: { workspace_id: current.structuredContent.workspace_id, max_depth: 3 }
+});
+for (const generatedName of ['CMakeFiles', 'CMakeCache.txt', 'ALL_BUILD.vcxproj']) {
+  if (defaultNavigationTree.structuredContent.text.includes(generatedName)) throw new Error(`default tree exposed generated entry ${generatedName}`);
+}
+const generatedNavigationTree = await client.request('tools/call', {
+  name: 'tree',
+  arguments: { workspace_id: current.structuredContent.workspace_id, max_depth: 3, include_generated: true }
+});
+for (const generatedName of ['CMakeFiles', 'CMakeCache.txt', 'ALL_BUILD.vcxproj']) {
+  if (!generatedNavigationTree.structuredContent.text.includes(generatedName)) throw new Error(`include_generated tree omitted ${generatedName}`);
+}
+const explicitGeneratedTree = await client.request('tools/call', {
+  name: 'tree',
+  arguments: { workspace_id: current.structuredContent.workspace_id, path: 'CMakeFiles', max_depth: 2 }
+});
+if (!explicitGeneratedTree.structuredContent.text.includes('generated.txt')) throw new Error('explicit generated directory tree did not remain accessible');
+const generatedProjectRead = await client.request('tools/call', {
+  name: 'read',
+  arguments: { workspace_id: current.structuredContent.workspace_id, path: 'ALL_BUILD.vcxproj' }
+});
+const generatedProjectEdit = await client.request('tools/call', {
+  name: 'edit',
+  arguments: { workspace_id: current.structuredContent.workspace_id, path: 'ALL_BUILD.vcxproj', old_text: 'generated smoke fixture', new_text: 'generated smoke fixture edited', expected_sha256: generatedProjectRead.structuredContent.sha256 }
+});
+if (!generatedProjectEdit.structuredContent.changed) throw new Error('explicit generated project edit was blocked');
+await client.request('tools/call', {
+  name: 'edit',
+  arguments: { workspace_id: current.structuredContent.workspace_id, path: 'ALL_BUILD.vcxproj', old_text: 'generated smoke fixture edited', new_text: 'generated smoke fixture', expected_sha256: generatedProjectEdit.structuredContent.sha256 }
+});
 const alternate = await client.request('tools/call', {
   name: 'open_workspace',
   arguments: { root: alternateWorkspace, include_tree: false }

@@ -1710,6 +1710,7 @@ export function createCodexProServer(
         path: z.string().optional().describe("Directory relative to workspace root. Default: ."),
         max_depth: z.number().int().min(1).max(12).optional().describe("Maximum depth. Default: 4."),
         include_hidden: z.boolean().optional().describe("Include dotfiles/dotfolders that are not blocked. Default: false."),
+        include_generated: z.boolean().optional().describe("Include common CMake/Visual Studio generated entries in broad tree views. Default: false. Explicitly targeting a generated directory still shows it."),
         max_entries: z.number().int().min(1).max(3000).optional().describe("Maximum entries. Default: 800.")
       },
       annotations: READ_ONLY_ANNOTATIONS,
@@ -1725,6 +1726,7 @@ export function createCodexProServer(
         path: args.path ?? ".",
         maxDepth: limitInt(args.max_depth, 4, 1, 12),
         includeHidden: parseBool(args.include_hidden, false),
+        includeGenerated: parseBool(args.include_generated, false),
         maxEntries: limitInt(args.max_entries, 800, 1, 3000)
       });
       return textResult(result.text, { workspace_id: workspace.id, root: workspace.root, ...result });

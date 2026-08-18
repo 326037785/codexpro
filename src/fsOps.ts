@@ -12,6 +12,7 @@ export interface TreeOptions {
   path?: string;
   maxDepth: number;
   includeHidden: boolean;
+  includeGenerated?: boolean;
   maxEntries: number;
 }
 
@@ -219,6 +220,12 @@ function isHiddenName(name: string): boolean {
   return name.startsWith(".") && name !== "." && name !== "..";
 }
 
+function isGeneratedTreeEntry(name: string): boolean {
+  if (name === "CMakeFiles") return true;
+  if (name === "CMakeCache.txt" || name === "cmake_install.cmake") return true;
+  return /^(?:ALL_BUILD|ZERO_CHECK)\.vcxproj(?:\.(?:filters|user))?$/i.test(name);
+}
+
 export async function repoTree(config: CodexProConfig, guard: PathGuard, workspace: Workspace, options: TreeOptions): Promise<TreeResult> {
   const target = guard.resolve(workspace, options.path ?? ".");
   const stat = await fsp.stat(target.absPath);
@@ -229,12 +236,15 @@ export async function repoTree(config: CodexProConfig, guard: PathGuard, workspa
   const lines: string[] = [target.relPath === "." ? "." : `${target.relPath}/`];
   let entries = 0;
   let truncated = false;
+  const targetIsGenerated = target.relPath !== "." && target.relPath.split("/").some(isGeneratedTreeEntry);
+  const includeGenerated = options.includeGenerated === true || targetIsGenerated;
 
   async function walk(absDir: string, relDir: string, depth: number, prefix: string): Promise<void> {
     if (depth >= options.maxDepth || truncated) return;
     let dirents = await fsp.readdir(absDir, { withFileTypes: true });
     dirents = dirents
       .filter((entry) => options.includeHidden || !isHiddenName(entry.name))
+      .filter((entry) => includeGenerated || !isGeneratedTreeEntry(entry.name))
       .filter((entry) => !guard.isBlockedRelativePath(normalizeRelPath(path.join(relDir, entry.name))))
       .sort((a, b) => {
         if (a.isDirectory() && !b.isDirectory()) return -1;

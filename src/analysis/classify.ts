@@ -35,7 +35,13 @@ const LANGUAGE_BY_EXTENSION: Record<string, AnalysisLanguage> = {
 };
 
 const TEST_PATTERNS = [/(^|\/)(__tests__|test|tests|spec)\//i, /\.(test|spec)\.[^.]+$/i, /_test\.go$/i, /Tests?\.swift$/i];
-const GENERATED_PATTERNS = [/(^|\/)(generated|vendor|vendors|third_party)\//i, /\.generated\./i, /\.g\.(cs|dart)$/i];
+const GENERATED_PATTERNS = [
+  /(^|\/)(generated|vendor|vendors|third_party|CMakeFiles)(?:\/|$)/i,
+  /(^|\/)(?:CMakeCache\.txt|cmake_install\.cmake)$/i,
+  /(^|\/)(?:ALL_BUILD|ZERO_CHECK)\.vcxproj(?:\.(?:filters|user))?$/i,
+  /\.generated\./i,
+  /\.g\.(cs|dart)$/i
+];
 const INFRA_PATTERNS = [/(^|\/)(\.github|infra|infrastructure|terraform|deploy|k8s|helm)\//i, /(^|\/)Dockerfile$/i];
 const CONFIG_NAMES = new Set(["package.json", "tsconfig.json", "pyproject.toml", "Cargo.toml", "go.mod", "pom.xml", "build.gradle", "build.gradle.kts", "Package.swift"]);
 const ENTRYPOINT_NAMES = new Set([

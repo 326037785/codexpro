@@ -13,7 +13,14 @@ export async function inventoryWorkspace(
   options: { root?: string } = {}
 ): Promise<InventoryResult> {
   const maxFiles = config.analysisLimits.maxInventoryFiles;
-  const candidates = await listFiles(guard, workspace, { root: options.root ?? ".", includeHidden: true, maxFiles: maxFiles + 1 });
+  const root = options.root ?? ".";
+  const includeGenerated = root !== "." && isGeneratedFile(root);
+  const candidates = await listFiles(guard, workspace, {
+    root,
+    includeHidden: true,
+    maxFiles: maxFiles + 1,
+    skipPath: includeGenerated ? undefined : (relPath) => isGeneratedFile(relPath)
+  });
   const truncated = candidates.length > maxFiles;
   const files: InventoryFile[] = [];
 

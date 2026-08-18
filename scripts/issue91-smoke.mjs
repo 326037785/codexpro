@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { decodeCommandOutput, makeRestrictedBashEnv } from '../dist/bashOps.js';
-import { editTextFile } from '../dist/fsOps.js';
+import { editTextFile, makeUnifiedDiff } from '../dist/fsOps.js';
 import { gitDiff, gitStatus } from '../dist/gitOps.js';
 import { PathGuard, WorkspaceManager } from '../dist/guard.js';
 
@@ -85,6 +85,19 @@ try {
   if (crlfEdited !== 'gamma\r\ndelta\r\n') {
     throw new Error(`CRLF edit did not preserve file line endings: ${JSON.stringify(crlfEdited)}`);
   }
+
+  // Sparse multi-site edits must report the lines that actually changed, not the whole span between them.
+  const sparseBefore = Array.from({ length: 120 }, (_, index) => `line ${index}`);
+  const sparseAfter = [...sparseBefore];
+  sparseAfter[5] = 'line 5 changed';
+  sparseAfter[60] = 'line 60 changed';
+  sparseAfter[115] = 'line 115 changed';
+  const sparseDiff = makeUnifiedDiff(sparseBefore.join('\r\n'), sparseAfter.join('\r\n'), 'sparse.txt');
+  const sparseHunks = sparseDiff.diff.match(/^@@ /gm) ?? [];
+  if (sparseDiff.additions !== 3 || sparseDiff.deletions !== 3 || sparseHunks.length !== 3) {
+    throw new Error(`sparse multi-site diff expanded unchanged middle lines: ${JSON.stringify(sparseDiff)}`);
+  }
+
   const status = gitStatus(config, workspace, guard, 'nested/nested.txt');
   if (!status.includes('nested.txt') || !status.includes('M')) {
     throw new Error(`path-scoped gitStatus did not use nearest nested Git root: ${status}`);

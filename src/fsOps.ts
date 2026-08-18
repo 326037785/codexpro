@@ -40,6 +40,8 @@ export interface DiffResult {
   changed: boolean;
 }
 
+type DiffLine = { kind: "equal" | "delete" | "insert"; text: string };
+
 export function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
@@ -189,6 +191,141 @@ export function makeUnifiedDiff(oldText: string, newText: string, relPath: strin
     suffix += 1;
   }
 
+  const coreOld = oldLines.slice(prefix, oldLines.length - suffix);
+  const coreNew = newLines.slice(prefix, newLines.length - suffix);
+  const coreOps = myersLineDiff(coreOld, coreNew);
+  if (!coreOps) {
+    return makeCoarseUnifiedDiff(oldLines, newLines, relPath, prefix, suffix, maxChars);
+  }
+
+  const ops: DiffLine[] = [];
+  for (let i = 0; i < prefix; i += 1) ops.push({ kind: "equal", text: oldLines[i] });
+  ops.push(...coreOps);
+  for (let i = oldLines.length - suffix; i < oldLines.length; i += 1) {
+    ops.push({ kind: "equal", text: oldLines[i] });
+  }
+
+  const additions = ops.reduce((count, line) => count + (line.kind === "insert" ? 1 : 0), 0);
+  const deletions = ops.reduce((count, line) => count + (line.kind === "delete" ? 1 : 0), 0);
+  const changedIndexes: number[] = [];
+  for (let i = 0; i < ops.length; i += 1) {
+    if (ops[i].kind !== "equal") changedIndexes.push(i);
+  }
+
+  const context = 3;
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const index of changedIndexes) {
+    const start = Math.max(0, index - context);
+    const end = Math.min(ops.length, index + context + 1);
+    const previous = ranges[ranges.length - 1];
+    if (previous && start <= previous.end) previous.end = Math.max(previous.end, end);
+    else ranges.push({ start, end });
+  }
+
+  const oldBefore = new Array<number>(ops.length + 1).fill(0);
+  const newBefore = new Array<number>(ops.length + 1).fill(0);
+  for (let i = 0; i < ops.length; i += 1) {
+    oldBefore[i + 1] = oldBefore[i] + (ops[i].kind === "insert" ? 0 : 1);
+    newBefore[i + 1] = newBefore[i] + (ops[i].kind === "delete" ? 0 : 1);
+  }
+
+  const out: string[] = [`--- a/${relPath}`, `+++ b/${relPath}`];
+  for (const range of ranges) {
+    const oldCount = oldBefore[range.end] - oldBefore[range.start];
+    const newCount = newBefore[range.end] - newBefore[range.start];
+    const oldStart = oldCount === 0 ? oldBefore[range.start] : oldBefore[range.start] + 1;
+    const newStart = newCount === 0 ? newBefore[range.start] : newBefore[range.start] + 1;
+    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
+    for (let i = range.start; i < range.end; i += 1) {
+      const prefixChar = ops[i].kind === "equal" ? " " : ops[i].kind === "delete" ? "-" : "+";
+      out.push(`${prefixChar}${ops[i].text}`);
+    }
+  }
+
+  let diff = out.join("\n");
+  if (diff.length > maxChars) {
+    diff = diff.slice(0, maxChars) + `\n...[diff truncated to ${maxChars} chars]`;
+  }
+  return { diff: redactSensitiveText(diff), additions, deletions, changed: true };
+}
+
+function myersLineDiff(oldLines: string[], newLines: string[], maxDistance = 512): DiffLine[] | undefined {
+  const oldLength = oldLines.length;
+  const newLength = newLines.length;
+  if (oldLength === 0) return newLines.map((text) => ({ kind: "insert", text }));
+  if (newLength === 0) return oldLines.map((text) => ({ kind: "delete", text }));
+
+  const max = oldLength + newLength;
+  const limit = Math.min(max, maxDistance);
+  let frontier = new Map<number, number>();
+  frontier.set(1, 0);
+  const trace: Map<number, number>[] = [];
+
+  for (let distance = 0; distance <= limit; distance += 1) {
+    trace.push(new Map(frontier));
+    for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+      const left = frontier.get(diagonal - 1) ?? -1;
+      const right = frontier.get(diagonal + 1) ?? -1;
+      let x = diagonal === -distance || (diagonal !== distance && left < right) ? Math.max(0, right) : left + 1;
+      let y = x - diagonal;
+      while (x < oldLength && y < newLength && oldLines[x] === newLines[y]) {
+        x += 1;
+        y += 1;
+      }
+      frontier.set(diagonal, x);
+      if (x >= oldLength && y >= newLength) {
+        return backtrackMyersLineDiff(trace, oldLines, newLines, distance);
+      }
+    }
+  }
+  return undefined;
+}
+
+function backtrackMyersLineDiff(
+  trace: Map<number, number>[],
+  oldLines: string[],
+  newLines: string[],
+  finalDistance: number
+): DiffLine[] {
+  let x = oldLines.length;
+  let y = newLines.length;
+  const reversed: DiffLine[] = [];
+
+  for (let distance = finalDistance; distance >= 0; distance -= 1) {
+    const frontier = trace[distance];
+    const diagonal = x - y;
+    const left = frontier.get(diagonal - 1) ?? -1;
+    const right = frontier.get(diagonal + 1) ?? -1;
+    const previousDiagonal =
+      diagonal === -distance || (diagonal !== distance && left < right) ? diagonal + 1 : diagonal - 1;
+    const previousX = frontier.get(previousDiagonal) ?? 0;
+    const previousY = previousX - previousDiagonal;
+
+    while (x > previousX && y > previousY) {
+      reversed.push({ kind: "equal", text: oldLines[x - 1] });
+      x -= 1;
+      y -= 1;
+    }
+    if (distance === 0) break;
+    if (x === previousX) {
+      reversed.push({ kind: "insert", text: newLines[y - 1] });
+      y -= 1;
+    } else {
+      reversed.push({ kind: "delete", text: oldLines[x - 1] });
+      x -= 1;
+    }
+  }
+  return reversed.reverse();
+}
+
+function makeCoarseUnifiedDiff(
+  oldLines: string[],
+  newLines: string[],
+  relPath: string,
+  prefix: number,
+  suffix: number,
+  maxChars: number
+): DiffResult {
   const coreOldStart = prefix;
   const coreOldEnd = oldLines.length - suffix;
   const coreNewStart = prefix;
@@ -198,21 +335,15 @@ export function makeUnifiedDiff(oldText: string, newText: string, relPath: strin
   const oldEnd = Math.min(oldLines.length, coreOldEnd + context);
   const newStart = Math.max(0, coreNewStart - context);
   const newEnd = Math.min(newLines.length, coreNewEnd + context);
-
   const additions = Math.max(0, coreNewEnd - coreNewStart);
   const deletions = Math.max(0, coreOldEnd - coreOldStart);
-
   const out: string[] = [`--- a/${relPath}`, `+++ b/${relPath}`, `@@ -${oldStart + 1},${oldEnd - oldStart} +${newStart + 1},${newEnd - newStart} @@`];
-
   for (let i = oldStart; i < coreOldStart; i += 1) out.push(` ${oldLines[i]}`);
   for (let i = coreOldStart; i < coreOldEnd; i += 1) out.push(`-${oldLines[i]}`);
   for (let i = coreNewStart; i < coreNewEnd; i += 1) out.push(`+${newLines[i]}`);
   for (let i = coreOldEnd; i < oldEnd; i += 1) out.push(` ${oldLines[i]}`);
-
   let diff = out.join("\n");
-  if (diff.length > maxChars) {
-    diff = diff.slice(0, maxChars) + `\n...[diff truncated to ${maxChars} chars]`;
-  }
+  if (diff.length > maxChars) diff = diff.slice(0, maxChars) + `\n...[diff truncated to ${maxChars} chars]`;
   return { diff: redactSensitiveText(diff), additions, deletions, changed: true };
 }
 
@@ -281,7 +412,13 @@ export async function repoTree(config: CodexProConfig, guard: PathGuard, workspa
 export async function listFiles(
   guard: PathGuard,
   workspace: Workspace,
-  options: { root?: string; glob?: string; includeHidden?: boolean; maxFiles: number }
+  options: {
+    root?: string;
+    glob?: string;
+    includeHidden?: boolean;
+    maxFiles: number;
+    skipPath?: (relPath: string, isDirectory: boolean) => boolean;
+  }
 ): Promise<string[]> {
   const target = guard.resolve(workspace, options.root ?? ".");
   const stat = await fsp.stat(target.absPath);
@@ -291,6 +428,7 @@ export async function listFiles(
     const rel = displayPath(absFile, workspace.root);
     if (guard.isBlockedRelativePath(rel)) return;
     if (!options.includeHidden && rel.split("/").some(isHiddenName)) return;
+    if (options.skipPath?.(rel, false)) return;
     if (options.glob && !minimatch(rel, options.glob, { dot: true })) return;
     files.push(rel);
   }
@@ -310,8 +448,12 @@ export async function listFiles(
       const rel = displayPath(abs, workspace.root);
       if (guard.isBlockedRelativePath(rel)) continue;
       if (!options.includeHidden && rel.split("/").some(isHiddenName)) continue;
-      if (entry.isDirectory()) await walk(abs);
-      else if (entry.isFile()) await addFile(abs);
+      if (entry.isDirectory()) {
+        if (options.skipPath?.(rel, true)) continue;
+        await walk(abs);
+      } else if (entry.isFile()) {
+        await addFile(abs);
+      }
     }
   }
 

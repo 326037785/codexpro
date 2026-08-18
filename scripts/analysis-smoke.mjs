@@ -36,6 +36,10 @@ try {
   await write('native/find_shape_model.vcxproj', '<Project />\n');
   await write('native/include/shape_match.hpp', '#pragma once\n');
   await write('native/main.cpp', '#include "shape_match.hpp"\nint main() { return 0; }\n');
+  await write('CMakeFiles/generated.cpp', 'int generated() { return 1; }\n');
+  await write('CMakeCache.txt', 'generated cache\n');
+  await write('ALL_BUILD.vcxproj', '<Project />\n');
+  await write('vendor/dependency.ts', 'export const generatedDependency = true;\n');
   await write('.vs/find_shape_model/v17/DocumentLayout.json', '{}\n');
   await write('notes/many.txt', Array.from({ length: 20 }, (_, index) => `common marker ${index}`).join('\n') + '\n');
   await write('unknown/service.zig', 'pub fn loadUser() void {}\n');
@@ -74,6 +78,11 @@ try {
   assert(result.files.some((file) => file.path === 'src/index.ts' && file.entrypoint === true));
   assert(result.files.some((file) => file.path === 'native/main.cpp' && file.entrypoint === true));
   assert(!result.files.some((file) => file.path.startsWith('.vs/')));
+  for (const generatedPath of ['CMakeFiles/generated.cpp', 'CMakeCache.txt', 'ALL_BUILD.vcxproj', 'vendor/dependency.ts']) {
+    assert(!result.files.some((file) => file.path === generatedPath), `broad inventory exposed generated path ${generatedPath}`);
+  }
+  const explicitGeneratedInventory = await inventoryWorkspace(config, guard, workspace, { root: 'CMakeFiles' });
+  assert(explicitGeneratedInventory.files.some((file) => file.path === 'CMakeFiles/generated.cpp'));
   assert.equal(result.coverage.inventoryFiles, result.files.length);
   assert.match(result.fingerprint, /^[a-f0-9]{64}$/);
   assert(result.files.some((file) => file.path === 'unknown/service.zig' && file.language === 'unknown'));

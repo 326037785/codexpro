@@ -1880,7 +1880,7 @@ export function createCodexProServer(
     "write",
     {
       title: "Write File",
-      description: "Create or overwrite a meaningful text file inside the workspace. New files use an atomic rename; existing files retain their inode and metadata. Returns a unified diff; pass the SHA from read when overwriting shared files.",
+      description: "Create or overwrite a meaningful text file inside the workspace. New files use an atomic rename; existing files retain their inode and metadata. Returns compact change stats; use show_changes for review. Pass the SHA from read when overwriting shared files.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().describe("File path relative to workspace root."),
@@ -1906,7 +1906,7 @@ export function createCodexProServer(
         expectedSha256: args.expected_sha256
       });
       if (result.diff.changed) invalidateWorkspaceAnalysis(workspace.id);
-      const text = `# Write File\n\nPath: ${result.path}\nExisted before: ${result.existed}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}\nDiff stats: +${result.diff.additions} -${result.diff.deletions}${diffBlock(result.diff.diff)}`;
+      const text = `# Write File\n\nPath: ${result.path}\nExisted before: ${result.existed}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}\nDiff stats: +${result.diff.additions} -${result.diff.deletions}\nReview: show_changes`;
       return textResult(text, {
         workspace_id: workspace.id,
         root: workspace.root,
@@ -1914,9 +1914,9 @@ export function createCodexProServer(
         existed: result.existed,
         bytes: result.bytes,
         sha256: result.sha256,
+        changed: result.diff.changed,
         additions: result.diff.additions,
-        deletions: result.diff.deletions,
-        diff: result.diff.diff
+        deletions: result.diff.deletions
       });
     }
   );
@@ -1927,7 +1927,7 @@ export function createCodexProServer(
     "edit",
     {
       title: "Edit File",
-      description: "Apply a targeted exact text replacement while retaining the existing file inode and metadata. Returns a unified diff; pass the SHA from read to reject stale multi-session edits.",
+      description: "Apply a targeted exact text replacement while retaining the existing file inode and metadata. Returns compact change stats; use show_changes for review. Pass the SHA from read to reject stale multi-session edits.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().describe("File path relative to workspace root."),
@@ -1954,7 +1954,7 @@ export function createCodexProServer(
         expectedSha256: args.expected_sha256
       });
       if (result.diff.changed) invalidateWorkspaceAnalysis(workspace.id);
-      const text = `# Edit File\n\nPath: ${result.path}\nReplacements: ${result.replacements}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}\nDiff stats: +${result.diff.additions} -${result.diff.deletions}${diffBlock(result.diff.diff)}`;
+      const text = `# Edit File\n\nPath: ${result.path}\nReplacements: ${result.replacements}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}\nDiff stats: +${result.diff.additions} -${result.diff.deletions}\nReview: show_changes`;
       return textResult(text, {
         workspace_id: workspace.id,
         root: workspace.root,
@@ -1962,9 +1962,9 @@ export function createCodexProServer(
         replacements: result.replacements,
         bytes: result.bytes,
         sha256: result.sha256,
+        changed: result.diff.changed,
         additions: result.diff.additions,
-        deletions: result.diff.deletions,
-        diff: result.diff.diff
+        deletions: result.diff.deletions
       });
     }
   );
@@ -1976,7 +1976,7 @@ export function createCodexProServer(
     {
       title: "Apply Patch",
       description:
-        "Apply one unified diff patch inside the workspace. Paths are validated before applying. Prefer edit for tiny replacements and apply_patch for multi-file diffs.",
+        "Apply one unified diff patch inside the workspace. Paths are validated before applying. Returns compact change stats; use show_changes for review. Prefer edit for tiny replacements and apply_patch for multi-file diffs.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         patch: z.string().describe("Unified diff patch to apply. File paths must stay inside the workspace and avoid blocked paths.")
@@ -1998,7 +1998,7 @@ export function createCodexProServer(
         `Paths: ${result.paths.join(", ")}`,
         `Diff stats: +${result.additions} -${result.deletions}`,
         result.stderr ? `stderr: ${result.stderr}` : "",
-        result.diff ? diffBlock(result.diff) : "No diff output."
+        "Review: show_changes"
       ].filter(Boolean).join("\n");
       return textResult(text, {
         workspace_id: workspace.id,
@@ -2008,8 +2008,7 @@ export function createCodexProServer(
         stderr: result.stderr,
         additions: result.additions,
         deletions: result.deletions,
-        changed: result.changed,
-        diff: result.diff
+        changed: result.changed
       });
     }
   );

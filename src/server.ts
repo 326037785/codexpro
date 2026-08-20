@@ -29,18 +29,25 @@ function errorText(error: unknown): string {
   return redactSensitiveText(String(error));
 }
 
-function compactStructuredContent<T>(value: T, depth = 0): T {
+function compactStructuredContent<T>(value: T, depth = 0, fieldName?: string): T {
   if (depth > 8 || value === null || value === undefined) return value;
   if (typeof value === "string") {
     if (value.length <= STRUCTURED_STRING_MAX_CHARS) return value as T;
+    const marker = `\n...[structured field truncated to ${STRUCTURED_STRING_MAX_CHARS} chars]...\n`;
+    if (fieldName === "stdout" || fieldName === "stderr") {
+      const payloadChars = STRUCTURED_STRING_MAX_CHARS - marker.length;
+      const headChars = Math.floor(payloadChars / 2);
+      const tailChars = payloadChars - headChars;
+      return `${value.slice(0, headChars)}${marker}${value.slice(-tailChars)}` as T;
+    }
     return `${value.slice(0, STRUCTURED_STRING_MAX_CHARS)}\n...[structured field truncated to ${STRUCTURED_STRING_MAX_CHARS} chars]` as T;
   }
-  if (Array.isArray(value)) return value.map((item) => compactStructuredContent(item, depth + 1)) as T;
+  if (Array.isArray(value)) return value.map((item) => compactStructuredContent(item, depth + 1, fieldName)) as T;
   if (typeof value !== "object") return value;
 
   const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    out[key] = compactStructuredContent(item, depth + 1);
+    out[key] = compactStructuredContent(item, depth + 1, key);
   }
   return out as T;
 }
@@ -58,8 +65,8 @@ function countTextLines(value: string | undefined): number {
   return value.split(/\r?\n/).filter((line) => line.length > 0).length;
 }
 
-function bashTextResult(config: CodexProConfig, result: Awaited<ReturnType<typeof runBash>>): string {
-  if (config.bashTranscript === "full") {
+function bashTextResult(config: CodexProConfig, result: Awaited<ReturnType<typeof runBash>>, rawInContent = config.bashTranscript === "full"): string {
+  if (rawInContent) {
     return `# Bash\n\n\`\`\`bash\n$ ${result.command}\n\`\`\`\n\nCWD: ${result.cwd}\nExit: ${result.exitCode}${result.signal ? ` (${result.signal})` : ""}\nDuration: ${result.durationMs} ms\n\n## stdout\n\n\`\`\`text\n${result.stdout || ""}\n\`\`\`\n\n## stderr\n\n\`\`\`text\n${result.stderr || ""}\n\`\`\``;
   }
 
@@ -75,7 +82,7 @@ function bashTextResult(config: CodexProConfig, result: Awaited<ReturnType<typeo
     `Duration: ${result.durationMs} ms`,
     `Output: stdout ${stdoutLines} line${stdoutLines === 1 ? "" : "s"}, stderr ${stderrLines} line${stderrLines === 1 ? "" : "s"}.`,
     "",
-    "Raw stdout/stderr are in the structured CodexPro card. Start with `--bash-transcript full` to print raw output in chat."
+    "Raw stdout/stderr are in structuredContent. Start with `--bash-transcript full` to also print raw output in chat when tool cards are disabled."
   ].join("\n");
 }
 
@@ -2233,10 +2240,9 @@ export function createCodexProServer(
         timeoutMs: args.timeout_ms,
         sessionId: args.session_id
       });
-      const text = bashTextResult(config, result);
-      const { stdout, stderr, ...resultMetadata } = result;
-      const structuredResult = config.bashTranscript === "full" ? resultMetadata : result;
-      return textResult(text, { workspace_id: workspace.id, root: workspace.root, ...structuredResult, bash_session_id: result.bashSessionId ?? null });
+      const rawInContent = config.bashTranscript === "full" && !config.toolCards;
+      const text = bashTextResult(config, result, rawInContent);
+      return textResult(text, { workspace_id: workspace.id, root: workspace.root, ...result, bash_session_id: result.bashSessionId ?? null });
     }
   );
 

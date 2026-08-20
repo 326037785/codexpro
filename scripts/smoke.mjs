@@ -266,9 +266,9 @@ async function expectToolError(name, args, pattern, targetClient = client) {
 for (const visualTool of toolNames) {
   if (hasWidgetMeta(visualTool) || hasToolCardStatusMeta(visualTool)) throw new Error(`${visualTool} exposed widget metadata while CODEXPRO_TOOL_CARDS is off`);
 }
-const cardClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'safe', '--tool-mode', 'full'], {
+const cardClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'full', '--tool-mode', 'full'], {
   cwd: path.resolve('.'),
-  env: { ...process.env, CODEXPRO_ROOT: tmp, CODEXPRO_ALLOWED_ROOTS: tmp, CODEXPRO_TOOL_CARDS: '1' }
+  env: { ...process.env, CODEXPRO_ROOT: tmp, CODEXPRO_ALLOWED_ROOTS: tmp, CODEXPRO_TOOL_CARDS: '1', CODEXPRO_BASH_TRANSCRIPT: 'full' }
 });
 await cardClient.request('initialize', {
   protocolVersion: '2024-11-05',
@@ -324,6 +324,20 @@ if (spawnSync(process.platform === 'win32' ? 'where' : 'sh', process.platform ==
   if (!cardRegexSearch.structuredContent.matches?.length || cardRegexSearch.structuredContent.used !== 'ripgrep') {
     throw new Error(`ripgrep regex search did not accept rg syntax: ${JSON.stringify(cardRegexSearch.structuredContent)}`);
   }
+}
+const cardFullBash = await cardClient.request('tools/call', { name: 'bash', arguments: { command: 'pwd' } });
+const cardFullBashText = cardFullBash.content?.[0]?.text ?? '';
+if (!cardFullBash.structuredContent.stdout?.trim() || cardFullBashText.includes('## stdout')) {
+  throw new Error(`tool-card bash should keep raw output in structuredContent without duplicating it in chat text: ${JSON.stringify(cardFullBash.structuredContent)}`);
+}
+const cardLongBash = await cardClient.request('tools/call', {
+  name: 'bash',
+  arguments: { command: 'node -e "process.stdout.write(\'HEAD_\' + \'MARKER\' + \'x\'.repeat(40000) + \'TAIL_\' + \'MARKER\')"' }
+});
+const cardLongStdout = cardLongBash.structuredContent.stdout ?? '';
+const cardLongText = cardLongBash.content?.[0]?.text ?? '';
+if (!cardLongStdout.includes('HEAD_MARKER') || !cardLongStdout.includes('TAIL_MARKER') || !cardLongStdout.includes('structured field truncated') || cardLongText.includes('TAIL_MARKER')) {
+  throw new Error('tool-card bash should preserve both ends of long machine-readable output without duplicating raw output in chat text');
 }
 await cardClient.close();
 if (spawnSync(process.platform === 'win32' ? 'where' : 'sh', process.platform === 'win32' ? ['rg'] : ['-lc', 'command -v rg >/dev/null 2>&1']).status === 0) {
@@ -1370,8 +1384,8 @@ await fullTranscriptClient.request('initialize', {
 fullTranscriptClient.notify('notifications/initialized');
 const fullTranscriptBash = await fullTranscriptClient.request('tools/call', { name: 'bash', arguments: { command: 'pwd' } });
 const fullTranscriptText = fullTranscriptBash.content?.[0]?.text ?? '';
-if (!fullTranscriptText.includes('## stdout') || fullTranscriptBash.structuredContent.stdout !== undefined || fullTranscriptBash.structuredContent.stderr !== undefined) {
-  throw new Error(`full bash transcript mode should carry raw output only in chat text: ${fullTranscriptText}`);
+if (!fullTranscriptText.includes('## stdout') || !fullTranscriptBash.structuredContent.stdout?.trim()) {
+  throw new Error(`full bash transcript mode should keep raw output machine-readable while also printing it in chat text: ${fullTranscriptText}`);
 }
 fullTranscriptClient.close();
 

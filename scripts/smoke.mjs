@@ -240,7 +240,7 @@ await client.request('initialize', {
 client.notify('notifications/initialized');
 const tools = await client.request('tools/list', {});
 const toolNames = tools.tools.map((tool) => tool.name);
-for (const expected of ['server_config', 'codexpro_self_test', 'codexpro_inventory', 'list_workspaces', 'open_current_workspace', 'open_workspace', 'workspace_snapshot', 'inspect_workspace', 'tree', 'search', 'load_skill', 'read', 'view_image', 'write', 'edit', 'apply_patch', 'import_file', 'bash', 'git_status', 'git_diff', 'show_changes', 'read_handoff', 'wait_for_handoff', 'codex_context', 'handoff_to_agent', 'handoff_to_codex', 'export_pro_context']) {
+for (const expected of ['server_config', 'operation_status', 'codexpro_self_test', 'codexpro_inventory', 'list_workspaces', 'open_current_workspace', 'open_workspace', 'workspace_snapshot', 'inspect_workspace', 'tree', 'search', 'load_skill', 'read', 'view_image', 'write', 'edit', 'apply_patch', 'import_file', 'bash', 'git_status', 'git_diff', 'show_changes', 'read_handoff', 'wait_for_handoff', 'codex_context', 'handoff_to_agent', 'handoff_to_codex', 'export_pro_context']) {
   if (!toolNames.includes(expected)) throw new Error(`missing tool: ${expected}`);
 }
 const toolCardUri = 'ui://widget/codexpro-tool-card-v10.html';
@@ -457,7 +457,7 @@ const selectedRead = await client.request('tools/call', {
   name: 'read',
   arguments: { path: 'selected.txt' }
 });
-const selectedText = selectedRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
+const selectedText = selectedRead.structuredContent.text ?? '';
 if (!selectedText.includes('alternate workspace')) {
   throw new Error(`read without workspace_id did not use selected workspace: ${selectedText}`);
 }
@@ -467,7 +467,7 @@ if (listedWorkspaces.structuredContent.selected_workspace_id !== alternate.struc
 }
 const resetCurrent = await client.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
 const resetRead = await client.request('tools/call', { name: 'read', arguments: { path: 'demo.txt' } });
-const resetText = resetRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
+const resetText = resetRead.structuredContent.text ?? '';
 if (resetCurrent.structuredContent.workspace_id !== current.structuredContent.workspace_id || !resetText.includes('omega')) {
   throw new Error('open_current_workspace did not restore the launch workspace selection');
 }
@@ -754,11 +754,11 @@ if (process.platform !== 'win32') {
   if (finalMode !== 0o666) {
     throw new Error(`edit changed existing permissions from 0666 to ${finalMode.toString(8)}`);
   }
-  if (finalStat.ino !== initialStat.ino) {
-    throw new Error(`edit replaced the existing inode ${initialStat.ino} with ${finalStat.ino}`);
+  if (finalStat.ino === initialStat.ino) {
+    throw new Error(`edit did not atomically replace inode ${initialStat.ino}`);
   }
-  if (await fs.readFile(hardLinkPath, 'utf8') !== 'permission after\n') {
-    throw new Error('edit broke existing hard-link identity');
+  if (await fs.readFile(hardLinkPath, 'utf8') !== 'permission before\n') {
+    throw new Error('atomic replacement unexpectedly mutated the existing hard-link target');
   }
 }
 const symlinkRead = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: symlinkEscapePath } });
@@ -767,6 +767,10 @@ for (const linkPath of danglingSymlinks) {
   await expectToolError('write', { workspace_id: ws, path: linkPath, content: 'escaped write\n' }, /symlink/i);
 }
 await client.request('tools/call', { name: 'edit', arguments: { workspace_id: ws, path: 'demo.txt', old_text: 'read\nread', new_text: 'read\nwrite' } });
+const recentEditOperations = await client.request('tools/call', { name: 'operation_status', arguments: { workspace_id: ws, tool: 'edit', limit: 5 } });
+if (!recentEditOperations.structuredContent.operations?.some?.((operation) => operation.state === 'completed')) {
+  throw new Error(`operation_status did not retain a completed edit receipt: ${JSON.stringify(recentEditOperations.structuredContent)}`);
+}
 await client.request('tools/call', { name: 'edit', arguments: { workspace_id: ws, path: 'src/auth.ts', old_text: 'return Boolean(user);', new_text: 'return Boolean(user?.trim());' } });
 const inspectAfterEdit = await client.request('tools/call', { name: 'inspect_workspace', arguments: { workspace_id: ws } });
 if (inspectAfterEdit.structuredContent.cache?.hit !== false) {
@@ -822,8 +826,8 @@ if (inspectAfterPatch.structuredContent.cache?.hit !== false) {
   throw new Error(`apply_patch did not invalidate workspace analysis: ${JSON.stringify(inspectAfterPatch.structuredContent.cache)}`);
 }
 const patchedRead = await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: 'demo.txt' } });
-if (!patchedRead.content?.[0]?.text?.includes('omega patched')) {
-  throw new Error(`apply_patch did not update demo.txt: ${patchedRead.content?.[0]?.text}`);
+if (!patchedRead.structuredContent.text?.includes('omega patched')) {
+  throw new Error(`apply_patch did not update demo.txt: ${patchedRead.structuredContent.text}`);
 }
 await expectToolError('apply_patch', {
   workspace_id: ws,
@@ -1235,8 +1239,8 @@ async function assertToolMode(mode, expected, hidden, extraEnv = {}) {
   modeClient.close();
 }
 
-await assertToolMode('', ['codexpro', 'server_config', 'codexpro_self_test', 'open_current_workspace', 'open_workspace', 'inspect_workspace', 'tree', 'search', 'load_skill', 'read', 'view_image', 'write', 'edit', 'apply_patch', 'import_file', 'bash', 'show_changes', 'read_handoff', 'wait_for_handoff', 'export_pro_context', 'handoff_to_agent'], ['codexpro_inventory', 'workspace_snapshot', 'git_status', 'git_diff', 'codex_context', 'handoff_to_codex']);
-await assertToolMode('minimal', ['codexpro', 'server_config', 'codexpro_self_test', 'open_current_workspace', 'open_workspace', 'read', 'write', 'edit', 'apply_patch', 'import_file', 'bash', 'show_changes'], ['inspect_workspace', 'tree', 'search', 'load_skill', 'view_image', 'read_handoff', 'wait_for_handoff', 'export_pro_context', 'handoff_to_agent', 'codex_context']);
+await assertToolMode('', ['codexpro', 'server_config', 'operation_status', 'codexpro_self_test', 'open_current_workspace', 'open_workspace', 'inspect_workspace', 'tree', 'search', 'load_skill', 'read', 'view_image', 'write', 'edit', 'apply_patch', 'import_file', 'bash', 'show_changes', 'read_handoff', 'wait_for_handoff', 'export_pro_context', 'handoff_to_agent'], ['codexpro_inventory', 'workspace_snapshot', 'git_status', 'git_diff', 'codex_context', 'handoff_to_codex']);
+await assertToolMode('minimal', ['codexpro', 'server_config', 'operation_status', 'codexpro_self_test', 'open_current_workspace', 'open_workspace', 'read', 'write', 'edit', 'apply_patch', 'import_file', 'bash', 'show_changes'], ['inspect_workspace', 'tree', 'search', 'load_skill', 'view_image', 'read_handoff', 'wait_for_handoff', 'export_pro_context', 'handoff_to_agent', 'codex_context']);
 await assertToolMode('', ['codexpro', 'server_config', 'show_changes', 'search'], ['inspect_workspace'], { CODEXPRO_ANALYSIS: '0' });
 
 const handoffWriteClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--write', 'handoff'], {
@@ -1366,9 +1370,8 @@ await fullTranscriptClient.request('initialize', {
 fullTranscriptClient.notify('notifications/initialized');
 const fullTranscriptBash = await fullTranscriptClient.request('tools/call', { name: 'bash', arguments: { command: 'pwd' } });
 const fullTranscriptText = fullTranscriptBash.content?.[0]?.text ?? '';
-const fullTranscriptStdout = (fullTranscriptBash.structuredContent.stdout ?? '').trim();
-if (!fullTranscriptText.includes('## stdout') || !fullTranscriptStdout || !fullTranscriptText.includes(fullTranscriptStdout)) {
-  throw new Error(`full bash transcript mode did not preserve raw stdout in chat text: ${fullTranscriptText}`);
+if (!fullTranscriptText.includes('## stdout') || fullTranscriptBash.structuredContent.stdout !== undefined || fullTranscriptBash.structuredContent.stderr !== undefined) {
+  throw new Error(`full bash transcript mode should carry raw output only in chat text: ${fullTranscriptText}`);
 }
 fullTranscriptClient.close();
 

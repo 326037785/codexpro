@@ -19,6 +19,8 @@ import { listCodexSessions, readCodexSession } from "./codexSessions.js";
 import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidgetHtml } from "./toolCardWidget.js";
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
 import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges } from "./analysis/index.js";
+import { finishOperation, recentOperations, startOperation, type OperationReceipt } from "./operationStore.js";
+import { rememberConversationWorkspace, rememberedConversationWorkspace } from "./workspaceStore.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -250,8 +252,14 @@ function conversationSelection(server: McpServer, extra?: CodexToolCallExtra): W
   if (!sessionId || sessionId.length > 512) return undefined;
   let selection = context.conversationSelections.get(sessionId);
   if (!selection) {
-    selection = {};
+    const rememberedWorkspaceId = rememberedConversationWorkspace(sessionId);
+    selection = {
+      ...(rememberedWorkspaceId ? { selectedWorkspaceId: rememberedWorkspaceId } : {}),
+      sessionId
+    };
     context.conversationSelections.set(sessionId, selection);
+  } else if (!selection.sessionId) {
+    selection.sessionId = sessionId;
   }
   selection.lastSeenAt = Date.now();
   return selection;
@@ -293,6 +301,45 @@ function assertWriteToolAllowed(config: CodexProConfig, relPath: string): void {
   throw new CodexProError("write/edit/apply_patch tools are disabled because CODEXPRO_WRITE_MODE=off. handoff_to_agent and handoff_to_codex are still available for planning.");
 }
 
+const MUTATING_TOOL_NAMES = new Set<string>([
+  "write",
+  "edit",
+  "apply_patch",
+  "import_file",
+  "bash",
+  "export_pro_context",
+  "handoff_to_agent",
+  "handoff_to_codex"
+]);
+
+function operationWorkspaceId(server: McpServer, args: Record<string, unknown>): string | undefined {
+  const explicit = typeof args.workspace_id === "string" ? args.workspace_id : undefined;
+  if (explicit) return explicit;
+  try {
+    return toolExecutionContextByServer.get(server as object)?.workspaces.currentWorkspaceId();
+  } catch {
+    return undefined;
+  }
+}
+
+function attachOperationReceipt(result: any, receipt: OperationReceipt | undefined): any {
+  if (!receipt || !result || typeof result !== "object") return result;
+  const structured = result.structuredContent;
+  result.structuredContent = {
+    ...(structured && typeof structured === "object" && !Array.isArray(structured) ? structured : {}),
+    operation: {
+      id: receipt.operationId,
+      tool: receipt.tool,
+      workspace_id: receipt.workspaceId,
+      input_hash: receipt.inputHash,
+      state: receipt.state,
+      started_at: receipt.startedAt,
+      completed_at: receipt.completedAt
+    }
+  };
+  return result;
+}
+
 function registerToolCompat(
   server: McpServer,
   name: string,
@@ -301,9 +348,9 @@ function registerToolCompat(
 ): void {
   const wrapped = async (args: any, extra?: CodexToolCallExtra) => {
     const started = Date.now();
+    const context = toolExecutionContextByServer.get(server as object);
+    const selection = conversationSelection(server, extra);
     try {
-      const context = toolExecutionContextByServer.get(server as object);
-      const selection = conversationSelection(server, extra);
       const invoke = () => handler(args ?? {}, extra);
       const rawResult = context
         ? await context.workspaces.withSelection(selection, invoke)
@@ -315,6 +362,10 @@ function registerToolCompat(
       const result = tagToolResult(errorResult(error), name, options);
       logToolCall(name, "error", started);
       return result;
+    } finally {
+      if (selection?.sessionId && selection.selectedWorkspaceId) {
+        rememberConversationWorkspace(selection.sessionId, selection.selectedWorkspaceId);
+      }
     }
   };
 
@@ -345,6 +396,7 @@ function registerToolCompat(
 const MINIMAL_TOOL_NAMES = [
   SUPERTOOL_NAME,
   "server_config",
+  "operation_status",
   "codexpro_self_test",
   "open_current_workspace",
   "open_workspace",
@@ -373,6 +425,7 @@ const STANDARD_TOOL_NAMES = [
 const FULL_TOOL_NAMES = [
   SUPERTOOL_NAME,
   "server_config",
+  "operation_status",
   "codexpro_self_test",
   "codexpro_inventory",
   "load_skill",
@@ -491,7 +544,20 @@ function registerCodexTool(
   handler: CodexToolHandler
 ): void {
   if (!shouldRegisterTool(config, name)) return;
-  const validatedHandler: CodexToolHandler = (args, extra) => handler(validateToolArgs(name, options, args), extra);
+  const validatedHandler: CodexToolHandler = async (args, extra) => {
+    const validatedArgs = validateToolArgs(name, options, args) as Record<string, unknown>;
+    if (!MUTATING_TOOL_NAMES.has(name)) return handler(validatedArgs, extra);
+
+    const receipt = startOperation(name, operationWorkspaceId(server, validatedArgs), validatedArgs);
+    try {
+      const result = await handler(validatedArgs, extra);
+      const terminal = finishOperation(receipt.operationId, result?.isError ? "failed" : "completed") ?? receipt;
+      return attachOperationReceipt(result, terminal);
+    } catch (error) {
+      finishOperation(receipt.operationId, "failed");
+      throw error;
+    }
+  };
   registerToolCompat(server, name, descriptorOptionsForConfig(config, name, options), validatedHandler);
   rememberRegisteredTool(server, name);
   rememberRegisteredToolHandler(server, name, validatedHandler);
@@ -1104,6 +1170,51 @@ export function createCodexProServer(
         registeredToolCount: registeredToolNames(server).length
       };
       return textResult(`# CodexPro Server Config\n\n${JSON.stringify(safeConfig, null, 2)}`, safeConfig);
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "operation_status",
+    {
+      title: "Operation Status",
+      description: "Inspect recent durable receipts for state-changing CodexPro calls. Use this after a connector/network failure to determine whether a local mutation started or completed before retrying.",
+      inputSchema: {
+        operation_id: z.string().optional().describe("Optional exact operation id returned by a prior mutating call."),
+        workspace_id: z.string().optional().describe("Optional workspace id filter."),
+        tool: z.string().optional().describe("Optional tool-name filter, for example edit or bash."),
+        limit: z.number().int().min(1).max(100).optional().describe("Maximum receipts to return. Default: 20.")
+      },
+      annotations: READ_ONLY_ANNOTATIONS
+    },
+    async (args) => {
+      const operations = recentOperations({
+        operationId: args.operation_id,
+        workspaceId: args.workspace_id,
+        tool: args.tool,
+        limit: args.limit
+      });
+      const structuredOperations = operations.map((operation) => ({
+        id: operation.operationId,
+        tool: operation.tool,
+        workspace_id: operation.workspaceId,
+        input_hash: operation.inputHash,
+        state: operation.state,
+        started_at: operation.startedAt,
+        completed_at: operation.completedAt
+      }));
+      const text = operations.length
+        ? operations.map((operation) => [
+            operation.operationId,
+            operation.tool,
+            operation.workspaceId ?? "workspace unknown",
+            operation.state,
+            operation.startedAt,
+            operation.completedAt ?? "not completed"
+          ].join(" | ")).join("\n")
+        : "No matching operation receipts.";
+      return textResult(`# Operation Status\n\n${text}`, { operations: structuredOperations, count: operations.length });
     }
   );
 
@@ -1729,7 +1840,8 @@ export function createCodexProServer(
         includeGenerated: parseBool(args.include_generated, false),
         maxEntries: limitInt(args.max_entries, 800, 1, 3000)
       });
-      return textResult(result.text, { workspace_id: workspace.id, root: workspace.root, ...result });
+      const text = `# File Tree\n\nEntries: ${result.entries}\nTruncated: ${result.truncated}\nFull tree is in structuredContent.text.`;
+      return textResult(text, { workspace_id: workspace.id, root: workspace.root, ...result });
     }
   );
 
@@ -1780,7 +1892,8 @@ export function createCodexProServer(
         used: result.used
       };
       if (result.analysis) structured.analysis = result.analysis;
-      return textResult(result.text, structured);
+      const text = `# Search\n\nMatches: ${result.matches.length}\nTruncated: ${result.truncated}\nBackend: ${result.used}\nFull matches are in structuredContent.matches.`;
+      return textResult(text, structured);
     }
   );
 
@@ -1812,7 +1925,7 @@ export function createCodexProServer(
         endLine: args.end_line,
         maxBytes: args.max_bytes
       });
-      const text = `# Read File\n\nPath: ${result.path}\nLines: ${result.startLine}-${result.endLine} of ${result.totalLines}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}\n\n\`\`\`text\n${result.text}\n\`\`\``;
+      const text = `# Read File\n\nPath: ${result.path}\nLines: ${result.startLine}-${result.endLine} of ${result.totalLines}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}\nFull file slice is in structuredContent.text.`;
       return textResult(text, { workspace_id: workspace.id, root: workspace.root, ...result });
     }
   );
@@ -1882,7 +1995,7 @@ export function createCodexProServer(
     "write",
     {
       title: "Write File",
-      description: "Create or overwrite a meaningful text file inside the workspace. New files use an atomic rename; existing files retain their inode and metadata. Returns compact change stats; use show_changes for review. Pass the SHA from read when overwriting shared files.",
+      description: "Create or overwrite a meaningful text file inside the workspace using a sibling temp file and atomic replacement. Returns compact change stats; use show_changes for review. Pass the SHA from read when overwriting shared files.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().describe("File path relative to workspace root."),
@@ -1929,7 +2042,7 @@ export function createCodexProServer(
     "edit",
     {
       title: "Edit File",
-      description: "Apply a targeted exact text replacement while retaining the existing file inode and metadata. Returns compact change stats; use show_changes for review. Pass the SHA from read to reject stale multi-session edits.",
+      description: "Apply a targeted exact text replacement, then commit the updated file through atomic replacement. Returns compact change stats; use show_changes for review. Pass the SHA from read to reject stale multi-session edits.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         path: z.string().describe("File path relative to workspace root."),
@@ -2121,7 +2234,9 @@ export function createCodexProServer(
         sessionId: args.session_id
       });
       const text = bashTextResult(config, result);
-      return textResult(text, { workspace_id: workspace.id, root: workspace.root, ...result, bash_session_id: result.bashSessionId ?? null });
+      const { stdout, stderr, ...resultMetadata } = result;
+      const structuredResult = config.bashTranscript === "full" ? resultMetadata : result;
+      return textResult(text, { workspace_id: workspace.id, root: workspace.root, ...structuredResult, bash_session_id: result.bashSessionId ?? null });
     }
   );
 
@@ -2149,7 +2264,8 @@ export function createCodexProServer(
       const status = gitStatus(config, workspace, guard, scopedPath);
       const statusError = looksLikeGitError(status) ? status : "";
       const changedFiles = statusError ? [] : changedStatusLines(status);
-      return textResult(status, {
+      const text = `# Git Status\n\nChanged entries: ${changedFiles.length}\n${statusError ? `Git status unavailable: ${statusError}` : "Full status is in structuredContent.status."}`;
+      return textResult(text, {
         workspace_id: workspace.id,
         root: workspace.root,
         path: args.path ?? "workspace status",
@@ -2187,20 +2303,15 @@ export function createCodexProServer(
       const diffError = rawDiff && looksLikeGitError(rawDiff) ? rawDiff : "";
       const stats = diffError ? { additions: 0, deletions: 0, changed: false } : diffStats(rawDiff);
       const includeDiff = parseBool(args.include_diff, true);
-      const text = diffError
-        ? diffError
-        : includeDiff
-        ? rawDiff
-        : [
-            "# Git Diff",
-            "",
-            `Workspace: ${workspace.root}`,
-            `Path: ${args.path ?? "workspace diff"}`,
-            `Staged: ${parseBool(args.staged, false)}`,
-            `Diff stats: +${stats.additions} -${stats.deletions}`,
-            "",
-            "Raw diff omitted by include_diff=false."
-          ].join("\n");
+      const text = [
+        "# Git Diff",
+        "",
+        `Workspace: ${workspace.root}`,
+        `Path: ${args.path ?? "workspace diff"}`,
+        `Staged: ${parseBool(args.staged, false)}`,
+        `Diff stats: +${stats.additions} -${stats.deletions}`,
+        diffError ? `Git diff unavailable: ${diffError}` : includeDiff ? "Full diff is in structuredContent.diff." : "Raw diff omitted by include_diff=false."
+      ].join("\n");
       return textResult(text, {
         workspace_id: workspace.id,
         root: workspace.root,
@@ -2303,9 +2414,9 @@ export function createCodexProServer(
         : includeDiff
         ? diffError
           ? `\n\nGit diff unavailable: ${diffError}`
-          : diff
-          ? diffBlock(diff)
-            : "\n\nNo diff output."
+          : responseDiff
+          ? "\n\nFull diff is in structuredContent.diff."
+          : "\n\nNo diff output."
         : "\n\nDiff omitted by request.";
       const analysisText = analysis
         ? `\n\n## Analysis\n\nAffected areas: ${(analysis.affected_areas as string[]).join(", ") || "none"}\nRisks: ${((analysis.risk_signals as Array<{ label?: string }>) ?? []).map((risk) => risk.label).filter(Boolean).join(", ") || "none"}\nRelated tests: ${((analysis.related_tests as Array<{ path?: string }>) ?? []).map((file) => file.path).filter(Boolean).join(", ") || "none"}`

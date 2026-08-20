@@ -7,6 +7,7 @@ import path from "node:path";
 import { minimatch } from "minimatch";
 import type { CodexProConfig } from "./config.js";
 import { expandHome } from "./config.js";
+import { rememberWorkspaceRoot, rememberedWorkspaceRoot } from "./workspaceStore.js";
 
 export interface Workspace {
   id: string;
@@ -62,6 +63,7 @@ function closestExistingParent(absPath: string): string {
 export interface WorkspaceSelectionState {
   selectedWorkspaceId?: string;
   lastSeenAt?: number;
+  sessionId?: string;
 }
 
 export class WorkspaceManager {
@@ -115,6 +117,7 @@ export class WorkspaceManager {
 
     const existing = [...this.workspaces.values()].find((workspace) => workspace.root === realRoot);
     if (existing) {
+      rememberWorkspaceRoot(existing.id, existing.root);
       if (options.select !== false) this.selectWorkspace(existing);
       return existing;
     }
@@ -126,6 +129,7 @@ export class WorkspaceManager {
       : { id, root: realRoot, openedAt: new Date().toISOString() };
     this.workspaces.set(id, workspace);
     this.sharedWorkspaceHandles?.set(id, workspace);
+    rememberWorkspaceRoot(id, realRoot);
     if (options.select !== false) this.selectWorkspace(workspace);
     return workspace;
   }
@@ -133,17 +137,22 @@ export class WorkspaceManager {
   getWorkspace(id?: string): Workspace {
     if (!id) {
       const selectedWorkspaceId = this.scopedSelection.getStore()?.selectedWorkspaceId ?? this.selectedWorkspaceId;
-      if (selectedWorkspaceId) {
-        const selected = this.workspaces.get(selectedWorkspaceId) ?? this.sharedWorkspaceHandles?.get(selectedWorkspaceId);
-        if (selected) return selected;
-      }
+      if (selectedWorkspaceId) return this.getWorkspace(selectedWorkspaceId);
       return this.selectDefaultWorkspace();
     }
     const workspace = this.workspaces.get(id) ?? this.sharedWorkspaceHandles?.get(id);
-    if (!workspace) {
-      throw new CodexProError(`Unknown workspace_id: ${id}. Call open_workspace first.`);
+    if (workspace) return workspace;
+
+    const rememberedRoot = rememberedWorkspaceRoot(id);
+    if (rememberedRoot) {
+      try {
+        const reopened = this.openWorkspace(rememberedRoot, { select: false });
+        if (reopened.id === id) return reopened;
+      } catch {
+        // Fall through to the explicit stale-id error below.
+      }
     }
-    return workspace;
+    throw new CodexProError(`Unknown workspace_id: ${id}. Call open_workspace first.`);
   }
 
   listWorkspaces(): Workspace[] {

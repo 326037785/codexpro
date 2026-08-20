@@ -100,40 +100,33 @@ export async function withFileWriteLocks<T>(absPaths: string[], task: () => Prom
 }
 
 async function writeText(absPath: string, content: string, existingText?: string, relPath = path.basename(absPath)): Promise<void> {
-  if (existingText !== undefined) {
-    const handle = await fsp.open(absPath, "r+");
-    try {
-      const currentText = await handle.readFile("utf8");
-      if (currentText !== existingText) {
-        throw new CodexProError(`File changed during write: ${relPath}. Read the file again before writing.`);
-      }
-      const buffer = Buffer.from(content, "utf8");
-      await handle.truncate(0);
-      let offset = 0;
-      while (offset < buffer.length) {
-        const { bytesWritten } = await handle.write(buffer, offset, buffer.length - offset, offset);
-        if (bytesWritten === 0) {
-          throw new CodexProError(`Write made no progress: ${relPath}.`);
-        }
-        offset += bytesWritten;
-      }
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    return;
-  }
-
   const parent = path.dirname(absPath);
   const basename = path.basename(absPath);
   const tempPath = path.join(parent, `.${basename}.codexpro-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
   let handle: fsp.FileHandle | undefined;
+  let existingMode = 0o666;
   try {
-    handle = await fsp.open(tempPath, "wx", 0o666);
+    if (existingText !== undefined) {
+      const currentText = await fsp.readFile(absPath, "utf8");
+      if (currentText !== existingText) {
+        throw new CodexProError(`File changed during write: ${relPath}. Read the file again before writing.`);
+      }
+      existingMode = (await fsp.stat(absPath)).mode & 0o7777;
+    }
+
+    handle = await fsp.open(tempPath, "wx", existingMode);
     await handle.writeFile(content, "utf8");
     await handle.sync();
     await handle.close();
     handle = undefined;
+
+    if (existingText !== undefined) {
+      const currentText = await fsp.readFile(absPath, "utf8");
+      if (currentText !== existingText) {
+        throw new CodexProError(`File changed during write: ${relPath}. Read the file again before writing.`);
+      }
+    }
+
     await fsp.rename(tempPath, absPath);
   } catch (error) {
     try {

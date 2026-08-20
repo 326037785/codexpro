@@ -503,7 +503,7 @@ try {
 
   const queryTools = await listTools(`${baseUrl}/mcp?codexpro_token=${encodeURIComponent(token)}`);
   const queryToolNames = toolNames(queryTools);
-  for (const expected of ['server_config', 'codexpro_self_test', 'codexpro_inventory', 'open_current_workspace', 'open_workspace', 'workspace_snapshot', 'tree', 'search', 'load_skill', 'git_status', 'git_diff', 'show_changes', 'read_handoff', 'wait_for_handoff', 'codex_context', 'handoff_to_agent', 'handoff_to_codex', 'export_pro_context']) {
+  for (const expected of ['server_config', 'operation_status', 'codexpro_self_test', 'codexpro_inventory', 'open_current_workspace', 'open_workspace', 'workspace_snapshot', 'tree', 'search', 'load_skill', 'git_status', 'git_diff', 'show_changes', 'read_handoff', 'wait_for_handoff', 'codex_context', 'handoff_to_agent', 'handoff_to_codex', 'export_pro_context']) {
     if (!queryToolNames.includes(expected)) {
       throw new Error(`URL-token MCP tools/list missing ${expected}; got ${queryToolNames.join(', ')}`);
     }
@@ -676,7 +676,7 @@ try {
       include_tree: false
     }, conversationA);
     const firstSelected = await callTool(firstClient, 'read', { path: 'selected.txt' }, conversationA);
-    const firstText = firstSelected.content?.find?.((part) => part.type === 'text')?.text ?? '';
+    const firstText = firstSelected.structuredContent.text ?? '';
     if (!firstText.includes('http alternate workspace')) {
       throw new Error(`first ChatGPT conversation did not retain selected workspace: ${firstText}`);
     }
@@ -690,7 +690,7 @@ try {
         throw new Error(`HTTP conversation selection did not survive a transport change: ${JSON.stringify(secondList.structuredContent)}`);
       }
       const inheritedRead = await callTool(secondClient, 'read', { path: 'selected.txt' }, conversationA);
-      const inheritedText = inheritedRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
+      const inheritedText = inheritedRead.structuredContent.text ?? '';
       if (!inheritedText.includes('http alternate workspace')) {
         throw new Error(`HTTP conversation selection did not drive an omitted-id read: ${inheritedText}`);
       }
@@ -700,7 +700,7 @@ try {
         throw new Error(`HTTP workspace selection leaked between ChatGPT conversations: ${JSON.stringify(isolatedList.structuredContent)}`);
       }
       const defaultRead = await callTool(secondClient, 'read', { path: 'session-checkpoint.txt' }, conversationB);
-      const defaultText = defaultRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
+      const defaultText = defaultRead.structuredContent.text ?? '';
       if (!defaultText.includes('checkpoint changed')) {
         throw new Error(`isolated ChatGPT conversation did not use the default workspace: ${defaultText}`);
       }

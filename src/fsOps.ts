@@ -6,7 +6,7 @@ import { minimatch } from "minimatch";
 import type { CodexProConfig } from "./config.js";
 import type { Workspace } from "./guard.js";
 import { CodexProError, displayPath, normalizeRelPath, PathGuard } from "./guard.js";
-import { hasSecretValue, redactSensitiveText } from "./redact.js";
+import { hasNewSecretValue, hasSecretValue, redactSensitiveText } from "./redact.js";
 
 export interface TreeOptions {
   path?: string;
@@ -596,7 +596,7 @@ export async function editTextFile(
     if (afterBytes > config.maxWriteBytes) {
       throw new CodexProError(`Edited file would be too large (${afterBytes} bytes). Limit: ${config.maxWriteBytes} bytes.`);
     }
-    if (hasSecretValue(after)) {
+    if (hasNewSecretValue(before, after)) {
       throw new CodexProError("Secret-looking content is blocked from edit. Use placeholders such as [REDACTED_SECRET] in handoff files.");
     }
 

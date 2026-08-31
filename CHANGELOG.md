@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added field-ranked `find_actions` lookup inside the stable `codexpro` dispatcher so schema-on-demand clients can discover an action by name, alias, intent, or family and then dispatch it without loading another direct tool schema. Tool descriptors were also de-cross-referenced so common discovery terms no longer fan out through unrelated parameter help text.
+- Fixed `edit` false positives on files that already contain secret-looking test fixtures: secret blocking now rejects newly introduced secret matches while allowing unrelated edits around pre-existing matches.
+
 ## 0.30.0 (2026-08-08)
 
 - Published the multi-project allowlist that was already on `main`: `codexpro settings set --project`, `--clear-projects`, session-local `open_workspace` selection, and matching FAQ guidance. npm `0.29.0` did not include those commits, which caused empty Allowed Roots reports after following current docs.

@@ -313,31 +313,52 @@ export function findToolActions(names: string[], queryValue: unknown, familyValu
       const aliases = [...(meta.aliases ?? [])].map((value) => value.toLowerCase());
       const intents = [...(meta.intents ?? [])].map((value) => value.toLowerCase());
       const nameLower = name.toLowerCase();
+      let matchRank = 0;
       let score = 0;
-      if (!query) score = family ? 40 : 1;
-      else if (nameLower === query) score = 100;
-      else if (aliases.includes(query)) score = 95;
-      else if (nameLower.startsWith(query)) score = 85;
-      else if (toolLookupTokens(nameLower).includes(query)) score = 80;
-      else if (aliases.some((alias) => alias.startsWith(query))) score = 75;
-      else {
+      let matchType = "token";
+      if (!query) {
+        matchRank = family ? 1 : 0;
+        score = family ? 1 : 0;
+        matchType = family ? "family" : "all";
+      } else if (nameLower === query) {
+        matchRank = 6;
+        matchType = "exact_name";
+      } else if (aliases.includes(query)) {
+        matchRank = 5;
+        matchType = "exact_alias";
+      } else if (nameLower.startsWith(query)) {
+        matchRank = 4;
+        matchType = "name_prefix";
+      } else if (toolLookupTokens(nameLower).includes(query)) {
+        matchRank = 3;
+        matchType = "name_token";
+      } else if (aliases.some((alias) => alias.startsWith(query))) {
+        matchRank = 2;
+        matchType = "alias_prefix";
+      } else {
         for (const token of queryTokens) {
           if (toolLookupTokens(nameLower).includes(token)) score += 30;
           if (aliases.some((alias) => toolLookupTokens(alias).includes(token))) score += 25;
           if (intents.some((intent) => toolLookupTokens(intent).includes(token))) score += 15;
         }
+        if (score > 0) matchRank = 1;
       }
-      if (score <= 0) return null;
+      if (matchRank <= 0) return null;
       return {
         name,
         family: meta.family,
+        match_type: matchType,
+        match_rank: matchRank,
         score,
         mutating: MUTATING_TOOL_NAMES.has(name),
         cost: meta.cost ?? "low"
       };
     })
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
-    .sort((left, right) => Number(right.score) - Number(left.score) || String(left.name).localeCompare(String(right.name)))
+    .sort((left, right) =>
+      Number(right.match_rank) - Number(left.match_rank)
+      || Number(right.score) - Number(left.score)
+      || String(left.name).localeCompare(String(right.name)))
     .slice(0, maxResults);
 
   return matches;
@@ -1182,7 +1203,7 @@ export function createCodexProServer(
           `Query: ${query || "(none)"}${family ? `; family=${family}` : ""}`,
           "",
           matches.length
-            ? matches.map((entry) => `- ${entry.name} [${entry.family}] score=${entry.score} cost=${entry.cost}${entry.mutating ? " mutating" : ""}`).join("\n")
+            ? matches.map((entry) => `- ${entry.name} [${entry.family}] match=${entry.match_type} rank=${entry.match_rank} score=${entry.score} cost=${entry.cost}${entry.mutating ? " mutating" : ""}`).join("\n")
             : "- no matching actions"
         ].join("\n");
         return textResult(text, {

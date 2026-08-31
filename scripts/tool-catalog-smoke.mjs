@@ -22,6 +22,9 @@ const names = [
 const exactRead = findToolActions(names, 'read', undefined, 5);
 assert(exactRead[0]?.name === 'read', `exact read should rank first: ${JSON.stringify(exactRead)}`);
 
+const exactWorkspace = findToolActions(names, 'open_workspace', undefined, 5);
+assert(exactWorkspace[0]?.name === 'open_workspace', `exact workspace name should outrank token matches: ${JSON.stringify(exactWorkspace)}`);
+
 const aliasSwitch = findToolActions(names, 'switch_workspace', undefined, 5);
 assert(aliasSwitch[0]?.name === 'open_workspace', `switch_workspace alias should resolve open_workspace: ${JSON.stringify(aliasSwitch)}`);
 

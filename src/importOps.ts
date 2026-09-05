@@ -313,7 +313,22 @@ async function finalizeImportFile(tempPath: string, destinationAbs: string, over
       }
     }
   }
-  await fsp.rename(tempPath, destinationAbs);
+  try {
+    await fsp.rename(tempPath, destinationAbs);
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    if (code !== "EXDEV") throw error;
+
+    const basename = path.basename(destinationAbs);
+    const stagingPath = path.join(parent, `.${basename}.codexpro-import-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
+    try {
+      await fsp.copyFile(tempPath, stagingPath, fs.constants.COPYFILE_EXCL);
+      await fsp.rename(stagingPath, destinationAbs);
+      await fsp.rm(tempPath, { force: true });
+    } finally {
+      await fsp.rm(stagingPath, { force: true }).catch(() => undefined);
+    }
+  }
   return true;
 }
 

@@ -13,6 +13,7 @@ export interface Workspace {
   id: string;
   root: string;
   openedAt: string;
+  readOnly: boolean;
 }
 
 export class CodexProError extends Error {
@@ -108,12 +109,15 @@ export class WorkspaceManager {
       throw new CodexProError(`Workspace root is not a directory: ${resolved}`);
     }
     const realRoot = fs.realpathSync.native(resolved);
-    const allowed = this.config.allowedRoots.some((allowedRoot) => isSubpath(realRoot, allowedRoot));
-    if (!allowed) {
+    const writable = this.config.allowedRoots.some((allowedRoot) => isSubpath(realRoot, allowedRoot));
+    const readOnlyAllowed = this.config.readOnlyRoots.some((readOnlyRoot) => isSubpath(realRoot, readOnlyRoot));
+    if (!writable && !readOnlyAllowed) {
       throw new CodexProError(
-        `Workspace root is outside allowed roots: ${realRoot}\nAllowed roots:\n${this.config.allowedRoots.map((r) => `- ${r}`).join("\n")}`
+        `Workspace root is outside allowed roots: ${realRoot}\nWritable roots:\n${this.config.allowedRoots.map((r) => `- ${r}`).join("\n")}` +
+          (this.config.readOnlyRoots.length ? `\nRead-only roots:\n${this.config.readOnlyRoots.map((r) => `- ${r}`).join("\n")}` : "")
       );
     }
+    const readOnly = !writable && readOnlyAllowed;
 
     const existing = [...this.workspaces.values()].find((workspace) => workspace.root === realRoot);
     if (existing) {
@@ -126,7 +130,8 @@ export class WorkspaceManager {
     const sharedWorkspace = this.sharedWorkspaceHandles?.get(id);
     const workspace = sharedWorkspace?.root === realRoot
       ? sharedWorkspace
-      : { id, root: realRoot, openedAt: new Date().toISOString() };
+      : { id, root: realRoot, openedAt: new Date().toISOString(), readOnly };
+    workspace.readOnly = readOnly;
     this.workspaces.set(id, workspace);
     this.sharedWorkspaceHandles?.set(id, workspace);
     rememberWorkspaceRoot(id, realRoot);

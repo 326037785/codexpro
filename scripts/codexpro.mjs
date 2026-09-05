@@ -60,6 +60,7 @@ Options:
   --project <dir>           Additional allowed project. settings set saves it. Can be repeated.
   --clear-projects          Remove saved additional projects with settings set.
   --allow-root <dir>        Additional allowed root for this launch. Can be repeated.
+  --read-root <dir>         Additional read-only root for this launch. Can be repeated.
   --allow-home              Allow opening any workspace under your home directory.
   --mode <agent|handoff|pro>
                              Default: agent.
@@ -312,7 +313,7 @@ function printSavedProfileHint(profile) {
 }
 
 function parseArgs(argv) {
-  const out = { allowRoots: [] };
+  const out = { allowRoots: [], readRoots: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const raw = argv[i];
     if (!raw.startsWith('--')) continue;
@@ -371,6 +372,7 @@ function parseArgs(argv) {
       if (value === undefined || (inlineValue === undefined && value.startsWith('--'))) throw new Error(`Missing value for --${key}`);
       if (inlineValue === undefined) i += 1;
       if (key === 'allow-root' || key === 'project') out.allowRoots.push(value);
+      else if (key === 'read-root') out.readRoots.push(value);
       else out[key.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = value;
     }
   }
@@ -513,6 +515,15 @@ function configuredProjectRoots(root, args = {}, profile = {}) {
       : [];
   const requested = Array.isArray(args.allowRoots) ? args.allowRoots : [];
   return [...new Set([...saved, ...requested].map(realDir))].filter((projectRoot) => projectRoot !== root);
+}
+
+function configuredReadOnlyRoots(args = {}) {
+  const envRoots = String(process.env.CODEXPRO_READ_ONLY_ROOTS ?? '')
+    .split(path.delimiter)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const requested = Array.isArray(args.readRoots) ? args.readRoots : [];
+  return [...new Set([...envRoots, ...requested].map(realDir))];
 }
 
 function resolveCodexDir(root, input) {
@@ -3926,6 +3937,7 @@ async function main() {
   }
 
   const allowRoots = [root, ...configuredProjectRoots(root, args, profile)];
+  const readOnlyRoots = configuredReadOnlyRoots(args);
   const host = optionValue(args, profile, 'host', ['CODEXPRO_HOST'], '127.0.0.1');
   if (args.noAuth && (tunnel !== 'none' || !isLoopbackHost(host))) {
     throw new Error('--no-auth is only allowed with --tunnel none on a loopback host.');
@@ -3956,6 +3968,7 @@ async function main() {
     ...process.env,
     CODEXPRO_ROOT: root,
     CODEXPRO_ALLOWED_ROOTS: allowRoots.join(path.delimiter),
+    CODEXPRO_READ_ONLY_ROOTS: readOnlyRoots.join(path.delimiter),
     CODEXPRO_HOST: host,
     CODEXPRO_PORT: port,
     CODEXPRO_BASH_MODE: bash,
@@ -3992,6 +4005,7 @@ async function main() {
   printBox('CodexPro start', [
     labelValue('Workspace', root),
     ...(allowRoots.length > 1 ? [labelValue('Projects', allowRoots.slice(1).join(', '))] : []),
+    ...(readOnlyRoots.length ? [labelValue('Read-only roots', readOnlyRoots.join(', '))] : []),
     labelValue('Mode', `${mode}  tools=${toolMode}  write=${write}  bash=${bash}`),
     labelValue('Bash transcript', bashTranscript),
     labelValue('Codex sessions', codexSessions),

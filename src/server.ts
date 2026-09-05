@@ -675,6 +675,16 @@ function registerCodexTool(
     const validatedArgs = validateToolArgs(name, options, args) as Record<string, unknown>;
     if (!MUTATING_TOOL_NAMES.has(name)) return handler(validatedArgs, extra);
 
+    const workspace = toolExecutionContextByServer.get(server as object)?.workspaces.getWorkspace(
+      typeof validatedArgs.workspace_id === "string" ? validatedArgs.workspace_id : undefined
+    );
+    if (workspace?.readOnly) {
+      throw new CodexProError(
+        `Workspace is read-only: ${workspace.root}. ` +
+          `The ${name} tool is unavailable for --read-root workspaces; launch it with --allow-root to permit mutations.`
+      );
+    }
+
     const receipt = startOperation(name, operationWorkspaceId(server, validatedArgs), validatedArgs);
     try {
       const result = await handler(validatedArgs, extra);
@@ -713,6 +723,7 @@ function serverInstructions(config: CodexProConfig): string {
     "3. Use progressive retrieval: start from the user-named target with a shallow tree or targeted search, read only the files needed for the current decision, and expand to dependencies/tests/docs only when the task requires it. Do not build a repository-wide model by default.",
     "4. Use inspect_workspace only for explicit repository/area architecture analysis or when targeted navigation is insufficient. Prefer a scoped path when using it.",
     "5. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
+    "Read-only workspaces opened through --read-root support file/search/analysis/git-read tools, but writes, imports, handoffs, context exports, and bash are blocked.",
     editInstruction,
     bashInstruction,
     "8. Keep tool calls minimal. In schema-on-demand clients, use codexpro action=find_actions and then dispatch through codexpro when the needed action schema is not already loaded; use direct tools normally when their schema is already available.",
@@ -1293,6 +1304,7 @@ export function createCodexProServer(
       const safeConfig = {
         defaultRoot: config.defaultRoot,
         allowedRoots: config.allowedRoots,
+        readOnlyRoots: config.readOnlyRoots,
         host: config.host,
         port: config.port,
         widgetDomain: config.widgetDomain,
@@ -1448,7 +1460,7 @@ export function createCodexProServer(
         check("git status", "fail", errorText(error));
       }
 
-      if (parseBool(args.write_probe, true)) {
+      if (parseBool(args.write_probe, true) && !workspace.readOnly) {
         if (config.writeMode === "off") {
           check("write/edit probe", "warn", "skipped because CODEXPRO_WRITE_MODE=off");
         } else {
@@ -1479,7 +1491,7 @@ export function createCodexProServer(
           }
         }
       } else {
-        check("write/edit probe", "warn", "skipped by request");
+        check("write/edit probe", "warn", workspace.readOnly ? "skipped for read-only workspace" : "skipped by request");
       }
 
       if (parseBool(args.pro_context_probe, true)) {
@@ -1511,7 +1523,7 @@ export function createCodexProServer(
         check("selected-only pro context", "warn", "skipped by request");
       }
 
-      if (parseBool(args.bash_probe, true)) {
+      if (parseBool(args.bash_probe, true) && !workspace.readOnly) {
         try {
           if (config.bashMode === "off") {
             check("bash policy", "warn", "bash disabled");
@@ -1533,7 +1545,7 @@ export function createCodexProServer(
           check("bash policy", "fail", errorText(error));
         }
       } else {
-        check("bash policy", "warn", "skipped by request");
+        check("bash policy", "warn", workspace.readOnly ? "skipped for read-only workspace" : "skipped by request");
       }
 
       check(
@@ -1710,7 +1722,7 @@ export function createCodexProServer(
       const selectedWorkspaceId = workspaces.currentWorkspaceId();
       const current = workspaces.listWorkspaces();
       const text = current
-        .map((workspace) => `- ${workspace.id} — ${workspace.root}${workspace.id === selectedWorkspaceId ? " (selected)" : ""} (opened ${workspace.openedAt})`)
+        .map((workspace) => `- ${workspace.id} — ${workspace.root}${workspace.readOnly ? " (read-only)" : ""}${workspace.id === selectedWorkspaceId ? " (selected)" : ""} (opened ${workspace.openedAt})`)
         .join("\n");
       return textResult(text, {
         workspaces: current,
@@ -1754,6 +1766,7 @@ export function createCodexProServer(
         workspace_id: summary.workspaceId,
         selected_workspace_id: summary.workspaceId,
         root: summary.root,
+        read_only: workspace.readOnly,
         agents_loaded: summary.agentsLoaded,
         agents_path: summary.agentsPath,
         skills: summary.skills,
@@ -1810,6 +1823,7 @@ export function createCodexProServer(
         workspace_id: summary.workspaceId,
         selected_workspace_id: summary.workspaceId,
         root: summary.root,
+        read_only: workspace.readOnly,
         agents_loaded: summary.agentsLoaded,
         agents_path: summary.agentsPath,
         skills: summary.skills,
@@ -1859,6 +1873,7 @@ export function createCodexProServer(
       return textResult(text, {
         workspace_id: workspace.id,
         root: workspace.root,
+        read_only: workspace.readOnly,
         agents_loaded: summary.agentsLoaded,
         agents_path: summary.agentsPath,
         skills: summary.skills,

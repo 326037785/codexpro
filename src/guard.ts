@@ -15,6 +15,29 @@ export interface Workspace {
   openedAt: string;
 }
 
+export class WorkspaceRegistry {
+  private readonly workspaces = new Map<string, Workspace>();
+
+  findByRoot(root: string): Workspace | undefined {
+    return [...this.workspaces.values()].find((workspace) => workspace.root === root);
+  }
+
+  get(id: string): Workspace | undefined {
+    return this.workspaces.get(id);
+  }
+
+  register(workspace: Workspace): Workspace {
+    const existing = this.workspaces.get(workspace.id);
+    if (existing) return existing;
+    this.workspaces.set(workspace.id, workspace);
+    return workspace;
+  }
+
+  list(): Workspace[] {
+    return [...this.workspaces.values()];
+  }
+}
+
 export class CodexProError extends Error {
   constructor(message: string) {
     super(message);
@@ -73,7 +96,7 @@ export class WorkspaceManager {
 
   constructor(
     private readonly config: CodexProConfig,
-    private readonly sharedWorkspaceHandles?: Map<string, Workspace>
+    private readonly registry = new WorkspaceRegistry()
   ) {}
 
   withSelection<T>(selection: WorkspaceSelectionState | undefined, callback: () => T): T {
@@ -115,20 +138,17 @@ export class WorkspaceManager {
       );
     }
 
-    const existing = [...this.workspaces.values()].find((workspace) => workspace.root === realRoot);
+    const existing = this.registry.findByRoot(realRoot);
     if (existing) {
+      this.workspaces.set(existing.id, existing);
       rememberWorkspaceRoot(existing.id, existing.root);
       if (options.select !== false) this.selectWorkspace(existing);
       return existing;
     }
 
     const id = workspaceIdForRoot(realRoot);
-    const sharedWorkspace = this.sharedWorkspaceHandles?.get(id);
-    const workspace = sharedWorkspace?.root === realRoot
-      ? sharedWorkspace
-      : { id, root: realRoot, openedAt: new Date().toISOString() };
+    const workspace = this.registry.register({ id, root: realRoot, openedAt: new Date().toISOString() });
     this.workspaces.set(id, workspace);
-    this.sharedWorkspaceHandles?.set(id, workspace);
     rememberWorkspaceRoot(id, realRoot);
     if (options.select !== false) this.selectWorkspace(workspace);
     return workspace;
@@ -140,8 +160,11 @@ export class WorkspaceManager {
       if (selectedWorkspaceId) return this.getWorkspace(selectedWorkspaceId);
       return this.selectDefaultWorkspace();
     }
-    const workspace = this.workspaces.get(id) ?? this.sharedWorkspaceHandles?.get(id);
-    if (workspace) return workspace;
+    const workspace = this.workspaces.get(id) ?? this.registry.get(id);
+    if (workspace) {
+      this.workspaces.set(id, workspace);
+      return workspace;
+    }
 
     const rememberedRoot = rememberedWorkspaceRoot(id);
     if (rememberedRoot) {
@@ -149,15 +172,16 @@ export class WorkspaceManager {
         const reopened = this.openWorkspace(rememberedRoot, { select: false });
         if (reopened.id === id) return reopened;
       } catch {
-        // Fall through to the explicit stale-id error below.
+        // Fall through to configured roots and then the explicit stale-id error below.
       }
     }
+
     throw new CodexProError(`Unknown workspace_id: ${id}. Call open_workspace first.`);
   }
 
   listWorkspaces(): Workspace[] {
     const available = new Map<string, Workspace>();
-    for (const workspace of this.sharedWorkspaceHandles?.values() ?? []) available.set(workspace.id, workspace);
+    for (const workspace of this.registry.list()) available.set(workspace.id, workspace);
     for (const workspace of this.workspaces.values()) available.set(workspace.id, workspace);
     return [...available.values()];
   }

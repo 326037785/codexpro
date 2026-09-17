@@ -4,10 +4,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { decodeCommandOutput, makeRestrictedBashEnv } from '../dist/bashOps.js';
+import { decodeBashOutput, makeRestrictedBashEnv } from '../dist/bashOps.js';
 import { editTextFile, makeUnifiedDiff } from '../dist/fsOps.js';
 import { gitDiff, gitStatus } from '../dist/gitOps.js';
-import { PathGuard, WorkspaceManager } from '../dist/guard.js';
+import { PathGuard, WorkspaceManager, WorkspaceRegistry } from '../dist/guard.js';
 
 function runGit(cwd, args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -45,12 +45,12 @@ try {
     throw new Error('explicit unopened workspace_id was implicitly reconstructed from allowedRoots');
   }
 
-  // Short-lived HTTP transports share explicit workspace handles, while implicit selection is conversation-scoped.
-  const sharedWorkspaceHandles = new Map();
+  // Short-lived HTTP transports share explicitly opened workspaces, while implicit selection is conversation-scoped.
+  const workspaceRegistry = new WorkspaceRegistry();
   const conversationSelection = {};
   const isolatedSelection = {};
-  const firstSession = new WorkspaceManager(config, sharedWorkspaceHandles);
-  const secondSession = new WorkspaceManager(config, sharedWorkspaceHandles);
+  const firstSession = new WorkspaceManager(config, workspaceRegistry);
+  const secondSession = new WorkspaceManager(config, workspaceRegistry);
   const sharedOpened = firstSession.withSelection(conversationSelection, () => firstSession.openWorkspace(realAlternate));
   if (secondSession.getWorkspace(sharedOpened.id).root !== realAlternate) {
     throw new Error('explicitly opened shared workspace handle was not reusable across transport sessions');
@@ -109,14 +109,14 @@ try {
 
   // Windows-native commands can emit UTF-16LE, with or without BOM.
   const noBom = Buffer.from('windows utf16 output', 'utf16le');
-  if (decodeCommandOutput(noBom) !== 'windows utf16 output') {
+  if (decodeBashOutput(noBom, 'win32') !== 'windows utf16 output') {
     throw new Error('UTF-16LE output without BOM was not decoded');
   }
   const withBom = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('windows bom output', 'utf16le')]);
-  if (decodeCommandOutput(withBom) !== 'windows bom output') {
+  if (decodeBashOutput(withBom, 'win32') !== 'windows bom output') {
     throw new Error('UTF-16LE output with BOM was not decoded');
   }
-  if (decodeCommandOutput(Buffer.from('plain utf8 output', 'utf8')) !== 'plain utf8 output') {
+  if (decodeBashOutput(Buffer.from('plain utf8 output', 'utf8'), 'win32') !== 'plain utf8 output') {
     throw new Error('UTF-8 output regressed');
   }
 

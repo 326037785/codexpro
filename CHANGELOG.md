@@ -4,6 +4,20 @@
 
 - Added field-ranked `find_actions` lookup inside the stable `codexpro` dispatcher so schema-on-demand clients can discover an action by name, alias, intent, or family and then dispatch it without loading another direct tool schema. Tool descriptors were also de-cross-referenced so common discovery terms no longer fan out through unrelated parameter help text.
 - Fixed `edit` false positives on files that already contain secret-looking test fixtures: secret blocking now rejects newly introduced secret matches while allowing unrelated edits around pre-existing matches.
+- Hardened local handoff receipts: interruptions are recorded as non-terminal `interrupting` and terminal `interrupted` states only after child exit; stale in-flight receipts become `orphaned` only when recorded processes are gone and require reconciliation.
+- Blocked standard Git/GitHub remote mutation paths inside local handoff executors by default; `--allow-remote-mutations` is an explicit opt-in for authorized workflows.
+- Added explicit Windows Bash runtime selection: `auto` prefers Git for Windows and never silently falls back to WSL; WSL requires `CODEXPRO_BASH_RUNTIME=wsl`.
+- Documented an explicit maintainer security contact and advisory-reporting route for repositories where GitHub private vulnerability reporting is unavailable.
+- Search now passes the requested result limit through to ripgrep, preserving truthful truncation reporting for files with many matches.
+- Preserved the connector token for browser profile saves after removing it from history, and hardened the admin page against cross-origin writes.
+- Preserved explicitly opened workspace IDs across HTTP MCP sessions while keeping implicit workspace selection session-local.
+- Stats-only git diffs now use Git numstat directly instead of buffering the complete unified diff.
+- apply_patch now rejects Git's exit-zero skipped-patch result instead of reporting a false successful change.
+- Self-test Pro context checks now run independently of the write probe, and the write probe restores or removes its diagnostic file afterward.
+- Bash timeout schemas now accept the full supported 15-minute ceiling while runtime configuration remains authoritative.
+- Server config and self-test now report whether search is using ripgrep or the bounded Node fallback.
+- Path-scoped Git inspection now uses the nearest allowed repository root, and Windows command output recognizes UTF-16 streams.
+- HTTP health diagnostics now expose bounded request-arrival, dispatch, completion, authentication-failure, and correlation-ID metadata without recording request contents or tokens.
 
 ## 0.30.0 (2026-08-08)
 

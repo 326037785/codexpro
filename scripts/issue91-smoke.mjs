@@ -25,6 +25,7 @@ try {
   const config = {
     defaultRoot: realRoot,
     allowedRoots: [realRoot, realAlternate],
+    readOnlyRoots: [],
     blockedGlobs: [],
     maxOutputBytes: 1024 * 1024,
     maxReadBytes: 1024 * 1024,

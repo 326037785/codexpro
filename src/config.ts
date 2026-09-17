@@ -15,6 +15,7 @@ export const MAX_BASH_TIMEOUT_MS = 900_000;
 export interface CodexProConfig {
   defaultRoot: string;
   allowedRoots: string[];
+  readOnlyRoots: string[];
   host: string;
   port: number;
   widgetDomain: string;
@@ -114,7 +115,7 @@ function parseArgs(argv: string[]): Record<string, string | string[] | boolean> 
       }
     }
 
-    if (key === "allow-root") {
+    if (key === "allow-root" || key === "read-root") {
       const prev = out[key];
       if (Array.isArray(prev)) prev.push(String(value));
       else if (prev) out[key] = [String(prev), String(value)];
@@ -276,10 +277,17 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     ...splitRoots(process.env.CODEXPRO_ALLOWED_ROOTS),
     ...splitRoots(process.env.CODEBASE_BRIDGE_ALLOWED_ROOTS)
   ];
+  const readRootArgs = Array.isArray(args["read-root"])
+    ? args["read-root"]
+    : typeof args["read-root"] === "string"
+      ? [args["read-root"]]
+      : [];
+  const envReadOnlyRoots = splitRoots(process.env.CODEXPRO_READ_ONLY_ROOTS);
 
   const allowHome = process.env.CODEXPRO_ALLOW_HOME === "1" || args["allow-home"] === true;
   const requestedAllowed = [defaultRoot, ...allowRootArgs, ...envAllowedRoots, ...(allowHome ? [os.homedir()] : [])];
   const allowedRoots = [...new Set(requestedAllowed.map(toRealDir))];
+  const readOnlyRoots = [...new Set([...readRootArgs, ...envReadOnlyRoots].map(toRealDir))];
 
   const portArg = typeof args.port === "string" ? args.port : undefined;
   const hostArg = typeof args.host === "string" ? args.host : undefined;
@@ -330,6 +338,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
   return {
     defaultRoot,
     allowedRoots,
+    readOnlyRoots,
     host,
     port: numberFrom(portArg ?? process.env.CODEXPRO_PORT ?? process.env.PORT, 8787, 1, 65535),
     widgetDomain: widgetDomainFrom(widgetDomainArg ?? process.env.CODEXPRO_WIDGET_DOMAIN),

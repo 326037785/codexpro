@@ -93,6 +93,14 @@ codexpro start
 
 让 ChatGPT 对已允许项目执行 `open_workspace`。`open_current_workspace` 切回启动仓库。
 
+如果只想检查外部依赖，而不允许修改或执行 shell，可以把它加入只读根目录：
+
+```bash
+codexpro start --root D:\\WorkSite\\MyProject --read-root C:\\ThirdParty\\SomeSDK
+```
+
+`--read-root` workspace 支持 read/search/tree/inspect 和 Git 只读操作，但禁止 write/edit/import、handoff/context export 和 bash。同一路径如果同时通过 `--allow-root` 允许，则仍按可写目录处理。多个只读根目录也可以通过 `CODEXPRO_READ_ONLY_ROOTS` 配置，使用当前平台的路径分隔符分隔。
+
 两个 ChatGPT 账号或需要硬隔离时，用不同端口和 Server URL 跑两个 CodexPro 进程。
 
 ## 命令

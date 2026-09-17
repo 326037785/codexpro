@@ -83,6 +83,14 @@ codexpro start
 
 Ask ChatGPT to `open_workspace` on an allowed project. `open_current_workspace` returns to the launch repo.
 
+To inspect an external dependency without allowing edits or shell access, add it as a read-only root:
+
+```bash
+codexpro start --root D:\\WorkSite\\MyProject --read-root C:\\ThirdParty\\SomeSDK
+```
+
+A `--read-root` workspace supports read/search/tree/inspect and Git read operations, but blocks write/edit/import, handoff/context export, and bash. The same root remains writable if it is also allowed with `--allow-root`. You can also set multiple read-only roots with `CODEXPRO_READ_ONLY_ROOTS` using the platform path delimiter.
+
 For two ChatGPT accounts or hard isolation, run two CodexPro processes on different ports and Server URLs.
 
 ## Commands

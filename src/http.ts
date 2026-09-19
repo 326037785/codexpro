@@ -1763,6 +1763,7 @@ async function main(): Promise<void> {
       } else if (!sessionId && isInitializeRequest(req.body)) {
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
+          enableJsonResponse: true,
           onsessioninitialized: (newSessionId: string) => {
             pruneTransports();
             transports.set(newSessionId, {

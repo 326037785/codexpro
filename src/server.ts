@@ -29,6 +29,7 @@ import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges }
 import { finishOperation, recentOperations, startOperation, type OperationReceipt } from "./operationStore.js";
 import { rememberConversationWorkspace, rememberedConversationWorkspace } from "./workspaceStore.js";
 import { pathRedactions, redactPathsDeep, redactPathsInText } from "./pathLabels.js";
+import { CODEXPRO_VERSION } from "./version.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -1078,7 +1079,6 @@ ${options.plan.trim()}
 - Run focused verification before handing work back.
 - Update ${options.statusPath} with files touched, checks run, results, blockers, and review notes.
 - Save the final review diff to ${options.diffPath} when practical.
-- Append notable execution events to ${options.executionLogPath} when the implementation agent supports logging.
 `;
 }
 
@@ -1195,7 +1195,7 @@ export function createCodexProServer(
   const workspaces = new WorkspaceManager(config, options.workspaceRegistry);
   const reviewCheckpoints = new Map<string, string>();
   const guard = new PathGuard(config);
-  const server = new McpServer({ name: "CodexPro", version: "0.30.0" }, { instructions: serverInstructions(config) });
+  const server = new McpServer({ name: "CodexPro", version: CODEXPRO_VERSION }, { instructions: serverInstructions(config) });
   registeredToolNamesByServer.set(server as object, []);
   toolExecutionContextByServer.set(server as object, {
     workspaces,

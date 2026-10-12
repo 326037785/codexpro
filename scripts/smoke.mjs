@@ -1182,6 +1182,10 @@ const agentHandoff = await client.request('tools/call', {
   }
 });
 if (agentHandoff.structuredContent.agent !== 'opencode') throw new Error('handoff_to_agent did not preserve target agent');
+const generatedPlan = await fs.readFile(path.join(tmp, '.ai-bridge', 'current-plan.md'), 'utf8');
+if (generatedPlan.includes('execution-log.jsonl')) {
+  throw new Error('handoff_to_agent should not ask the implementation agent to write execution-log.jsonl');
+}
 const escapedHandoff = await client.request('tools/call', {
   name: 'handoff_to_agent',
   arguments: {

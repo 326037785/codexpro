@@ -827,8 +827,8 @@ async function runCardStress(root) {
       name: 'search',
       arguments: { workspace_id: opened.structuredContent.workspace_id, query: '--flag', path: 'many', intent: 'text', max_results: 2000 }
     });
-    assert(structured.structuredContent.analysis.groups.references.length > 0, 'raw structured search omitted reference groups');
-    assert(structured.structuredContent.analysis.matches.length > 0, 'raw structured search omitted analysis matches');
+    assert(structured.structuredContent.matches.some((match) => match.group === 'references'), 'structured search omitted reference metadata');
+    assert(!('matches' in structured.structuredContent.analysis) && !('groups' in structured.structuredContent.analysis), 'structured search repeated matches across arrays');
     const inspected = await client.request('tools/call', { name: 'inspect_workspace', arguments: { workspace_id: opened.structuredContent.workspace_id } });
     assert(inspected.structuredContent.files.length <= 120, `workspace card file inventory was not compacted: ${inspected.structuredContent.files.length}`);
   } finally {

@@ -16,7 +16,8 @@ import {
 import { repoTree, listFiles, readTextFile, writeTextFile, editTextFile, ensureAiBridge, withFileWriteLocks } from "./fsOps.js";
 import { viewWorkspaceImage } from "./imageOps.js";
 import { importAttachmentFile } from "./importOps.js";
-import { searchBackendStatus, searchWorkspace } from "./searchOps.js";
+import { searchBackendStatus, searchWorkspace, type SearchResult } from "./searchOps.js";
+import type { StructuredSearchMatch } from "./analysis/types.js";
 import { bashRuntimeStatus, runBash } from "./bashOps.js";
 import { gitDiff, gitDiffStats as readGitDiffStats, gitDiffStatus, gitLog, gitRuntimeStatus, gitStatus } from "./gitOps.js";
 import { readAiBridgeContext, readCodexContext, workspaceSummary } from "./workspaceOps.js";
@@ -66,6 +67,43 @@ function textResult(text: string, structuredContent: Record<string, unknown> = {
     content: [{ type: "text", text: redactSensitiveText(text) }],
     structuredContent: redactStructured(structuredContent),
     _meta: meta
+  };
+}
+
+function compactSearchMatches(result: SearchResult): {
+  matches: Array<SearchResult["matches"][number] & Partial<StructuredSearchMatch>>;
+  analysis?: Record<string, unknown>;
+} {
+  const matches: Array<SearchResult["matches"][number] & Partial<StructuredSearchMatch>> = result.matches.map((match) => ({ ...match }));
+  if (!result.analysis) return { matches };
+
+  const byLocation = new Map<string, number>();
+  matches.forEach((match, index) => byLocation.set(JSON.stringify([match.path, match.line]), index));
+  const mergedIndices = new Set<number>();
+  for (const match of result.analysis.matches) {
+    const index = byLocation.get(JSON.stringify([match.path, match.line]));
+    const lexical = index === undefined ? undefined : matches[index];
+    const sameLine = lexical && match.reasons.includes("exact text match") &&
+      !match.reasons.includes("dependent test") &&
+      lexical.text.trim().replace(/…$/, "").slice(0, 400) === match.text;
+    if (sameLine && index !== undefined && !mergedIndices.has(index)) {
+      matches[index] = { ...lexical, group: match.group, score: match.score, reasons: match.reasons,
+        confidence: match.confidence, source: match.source };
+      mergedIndices.add(index);
+    } else {
+      matches.push({ ...match });
+    }
+  }
+
+  const { groups: _groups, matches: _analysisMatches, coverage, warnings, ...metadata } = result.analysis;
+  const { warnings: coverageWarnings, ...coverageMetadata } = coverage;
+  return {
+    matches,
+    analysis: {
+      ...metadata,
+      coverage: coverageMetadata,
+      warnings: [...new Set([...warnings, ...coverageWarnings])]
+    }
   };
 }
 
@@ -2221,15 +2259,16 @@ export function createCodexProServer(
         symbol: args.symbol,
         includeTests: args.include_tests === undefined ? undefined : parseBool(args.include_tests, false)
       });
+      const compact = compactSearchMatches(result);
       const structured: Record<string, unknown> = {
         workspace_id: workspace.id,
         root: workspace.root,
-        matches: result.matches,
+        matches: compact.matches,
         truncated: result.truncated,
         used: result.used
       };
-      if (result.analysis) structured.analysis = result.analysis;
-      const text = `# Search\n\nMatches: ${result.matches.length}\nTruncated: ${result.truncated}\nBackend: ${result.used}\nFull matches are in structuredContent.matches.`;
+      if (compact.analysis) structured.analysis = compact.analysis;
+      const text = `# Search\n\nMatches: ${compact.matches.length}\n${compact.analysis ? "Lexical truncated" : "Truncated"}: ${result.truncated}\nBackend: ${result.used}\nFull matches are in structuredContent.matches.`;
       return textResult(text, structured);
     }
   );

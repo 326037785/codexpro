@@ -318,8 +318,9 @@ const cardStructuredSearch = await cardClient.request('tools/call', {
   name: 'search',
   arguments: { workspace_id: cardOpened.structuredContent.workspace_id, query: 'authenticate', path: 'src', intent: 'symbol', include_tests: true }
 });
-if (cardStructuredSearch.structuredContent.codexpro_tool !== 'search' || !cardStructuredSearch.structuredContent.analysis?.groups?.definitions?.length) {
-  throw new Error(`structured search card payload missing grouped analysis: ${JSON.stringify(cardStructuredSearch.structuredContent)}`);
+if (cardStructuredSearch.structuredContent.codexpro_tool !== 'search' ||
+    !cardStructuredSearch.structuredContent.matches?.some((match) => match.group === 'definitions')) {
+  throw new Error(`structured search card payload missing definitions: ${JSON.stringify(cardStructuredSearch.structuredContent)}`);
 }
 if (spawnSync(process.platform === 'win32' ? 'where' : 'sh', process.platform === 'win32' ? ['rg'] : ['-lc', 'command -v rg >/dev/null 2>&1']).status === 0) {
   const cardRegexSearch = await cardClient.request('tools/call', {
@@ -595,9 +596,41 @@ const structuredSearch = await client.request('tools/call', {
   name: 'search',
   arguments: { workspace_id: ws, query: 'authenticate', path: 'src', intent: 'symbol', include_tests: true }
 });
-if (!structuredSearch.structuredContent.analysis?.groups?.definitions?.length || !structuredSearch.structuredContent.analysis.groups.tests?.length) {
-  throw new Error(`structured search omitted grouped analysis: ${JSON.stringify(structuredSearch.structuredContent)}`);
+const { matches: mergedMatches, analysis: searchAnalysis } = structuredSearch.structuredContent;
+const definitions = mergedMatches.filter((match) => match.group === 'definitions');
+const relatedTests = mergedMatches.filter((match) => match.group === 'tests');
+if (!definitions.length || !relatedTests.length || 'groups' in searchAnalysis || 'matches' in searchAnalysis) {
+  throw new Error(`structured search did not preserve grouped facts without repeated arrays: ${JSON.stringify(structuredSearch.structuredContent)}`);
 }
+const authDefinition = mergedMatches.filter((match) => match.path === 'src/auth.ts' && match.line === 1);
+if (authDefinition.length !== 1 || authDefinition[0].group !== 'definitions' ||
+    !authDefinition[0].reasons.includes('symbol definition') || !authDefinition[0].source) {
+  throw new Error(`overlapping lexical and symbol facts were not merged: ${JSON.stringify(authDefinition)}`);
+}
+if (!relatedTests.some((match) => match.path === 'test/auth.test.ts' && match.reasons.includes('dependent test'))) {
+  throw new Error(`unique related-test evidence was lost: ${JSON.stringify(relatedTests)}`);
+}
+if (!searchAnalysis.coverage || !Array.isArray(searchAnalysis.warnings) || 'warnings' in searchAnalysis.coverage) {
+  throw new Error('analysis warnings and coverage were duplicated or removed');
+}
+// Lexical-only hits survive even when the structured search deliberately excludes test files.
+const lexicalOnlyTest = await client.request('tools/call', {
+  name: 'search',
+  arguments: { workspace_id: ws, query: 'authenticate', intent: 'symbol', include_tests: false }
+});
+if (!lexicalOnlyTest.structuredContent.matches.some((match) => match.path === 'test/auth.test.ts' && match.group === undefined)) {
+  throw new Error('union dropped lexical-only matches excluded from structured analysis');
+}
+// Structured analysis matches case-insensitively; preserve matches absent from the literal search.
+await fs.writeFile(path.join(tmp, 'src', 'uppercase.ts'), 'export const AUTHENTICATE = 1;\n', 'utf8');
+const structuredOnly = await client.request('tools/call', {
+  name: 'search',
+  arguments: { workspace_id: ws, query: 'authenticate', path: 'src', intent: 'symbol' }
+});
+if (!structuredOnly.structuredContent.matches.some((match) => match.path === 'src/uppercase.ts' && match.group)) {
+  throw new Error('union dropped structured-only matches absent from case-sensitive lexical search');
+}
+await fs.rm(path.join(tmp, 'src', 'uppercase.ts'));
 const openedByPath = await client.request('tools/call', { name: 'open_workspace', arguments: { path: tmp, include_tree: false } });
 if (openedByPath.structuredContent.workspace_id !== ws) {
   throw new Error(`open_workspace path alias returned ${openedByPath.structuredContent.workspace_id}, expected ${ws}`);

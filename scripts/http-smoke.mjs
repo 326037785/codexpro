@@ -208,6 +208,27 @@ function postToolsListWithSession(baseUrl, token, sessionId) {
   });
 }
 
+async function expectMcpCorsPreflight(baseUrl) {
+  const response = await fetch(`${baseUrl}/mcp`, {
+    method: 'OPTIONS',
+    headers: {
+      origin: 'https://chatgpt.com',
+      'access-control-request-method': 'POST',
+      'access-control-request-headers': 'authorization,content-type,mcp-session-id'
+    }
+  });
+  const exposed = response.headers.get('access-control-expose-headers') ?? '';
+  const allowed = response.headers.get('access-control-allow-headers') ?? '';
+  if (
+    response.status !== 204 ||
+    response.headers.get('access-control-allow-origin') !== '*' ||
+    !exposed.toLowerCase().includes('mcp-session-id') ||
+    !allowed.toLowerCase().includes('mcp-session-id')
+  ) {
+    throw new Error(`expected MCP CORS preflight support, got ${response.status} exposed=${exposed} allowed=${allowed}`);
+  }
+}
+
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-http-smoke-'));
 const alternateParent = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-http-alternate-parent-'));
 const alternateRoot = path.join(alternateParent, 'descendant-workspace');
@@ -275,6 +296,7 @@ const child = spawn('node', ['dist/http.js'], {
 try {
   await waitForListening(child);
   const baseUrl = `http://127.0.0.1:${port}`;
+  await expectMcpCorsPreflight(baseUrl);
 
   const unauthorized = await fetch(`${baseUrl}/healthz`);
   if (unauthorized.status !== 401) {

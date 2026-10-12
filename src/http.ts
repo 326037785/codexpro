@@ -1468,6 +1468,15 @@ async function main(): Promise<void> {
     mcp_dispatches_started: 0,
     mcp_responses_completed: 0,
     mcp_errors: 0,
+    mcp_post_requests: 0,
+    mcp_get_requests: 0,
+    mcp_delete_requests: 0,
+    mcp_options_requests: 0,
+    sessions_created: 0,
+    sessions_closed: 0,
+    sessions_pruned_ttl: 0,
+    sessions_pruned_capacity: 0,
+    session_not_found: 0,
     last_request_at: null as string | null,
     last_mcp_request_at: null as string | null,
     last_dispatch_started_at: null as string | null,
@@ -1550,6 +1559,10 @@ async function main(): Promise<void> {
     if (req.path === "/mcp") {
       connectionDiagnostics.mcp_requests_received += 1;
       connectionDiagnostics.last_mcp_request_at = requestTime;
+      if (req.method === "POST") connectionDiagnostics.mcp_post_requests += 1;
+      else if (req.method === "GET") connectionDiagnostics.mcp_get_requests += 1;
+      else if (req.method === "DELETE") connectionDiagnostics.mcp_delete_requests += 1;
+      else if (req.method === "OPTIONS") connectionDiagnostics.mcp_options_requests += 1;
     }
     if (!logRequests) {
       next();
@@ -1560,6 +1573,23 @@ async function main(): Promise<void> {
     res.on("finish", () => {
       console.error(`[CodexPro] ${req.method} ${req.path} -> ${res.statusCode} ${Date.now() - started}ms request_id=${requestId}`);
     });
+    next();
+  });
+  // MCP clients may run behind a browser-origin connector. Keep CORS scoped to
+  // the MCP endpoint so preflight never falls through to token auth and the
+  // client can read the session id needed for subsequent requests.
+  app.use("/mcp", (req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Authorization, Content-Type, Mcp-Session-Id, Last-Event-ID"
+    );
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    if (req.method === "OPTIONS") {
+      res.sendStatus(204);
+      return;
+    }
     next();
   });
   app.get("/favicon.ico", (_req, res) => {
@@ -1637,6 +1667,7 @@ async function main(): Promise<void> {
   function sendSessionError(res: Response, sessionId: string | undefined): void {
     const missing = !sessionId;
     const malformed = Boolean(sessionId && !sessionIdPattern.test(sessionId));
+    if (!missing && !malformed) connectionDiagnostics.session_not_found += 1;
     res.status(missing || malformed ? 400 : 404).json({
       jsonrpc: "2.0",
       error: missing
@@ -1657,6 +1688,7 @@ async function main(): Promise<void> {
     for (const [sessionId, record] of transports) {
       if (now - record.lastSeenAt > config.httpSessionTtlMs) {
         transports.delete(sessionId);
+        connectionDiagnostics.sessions_pruned_ttl += 1;
         closeTransport(record);
       }
     }
@@ -1664,6 +1696,7 @@ async function main(): Promise<void> {
       const oldest = [...transports.entries()].sort((a, b) => a[1].lastSeenAt - b[1].lastSeenAt)[0];
       if (!oldest) break;
       transports.delete(oldest[0]);
+      connectionDiagnostics.sessions_pruned_capacity += 1;
       closeTransport(oldest[1]);
     }
     for (const [sessionId, selection] of conversationSelections) {
@@ -1717,7 +1750,12 @@ async function main(): Promise<void> {
       contextDir: config.contextDir,
       authEnabled: Boolean(config.authToken),
       authRequired: Boolean(config.authToken),
-      connection_diagnostics: connectionDiagnostics
+      connection_diagnostics: {
+        ...connectionDiagnostics,
+        active_transports: transports.size,
+        max_http_sessions: config.maxHttpSessions,
+        http_session_ttl_ms: config.httpSessionTtlMs
+      }
     }, { labelUnknownPaths: true }));
   });
 
@@ -1766,6 +1804,7 @@ async function main(): Promise<void> {
           enableJsonResponse: true,
           onsessioninitialized: (newSessionId: string) => {
             pruneTransports();
+            connectionDiagnostics.sessions_created += 1;
             transports.set(newSessionId, {
               transport,
               createdAt: Date.now(),
@@ -1776,6 +1815,7 @@ async function main(): Promise<void> {
         } as any);
 
         (transport as any).onclose = () => {
+          connectionDiagnostics.sessions_closed += 1;
           const closedSessionId = (transport as any).sessionId;
           if (closedSessionId) transports.delete(closedSessionId);
         };
